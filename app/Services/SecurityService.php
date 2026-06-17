@@ -98,8 +98,8 @@ class SecurityService
         $rawInputs = [
             'url' => $payload['url'] ?? '',
             'query' => json_encode($payload['query'] ?? []),
-            'body' => is_array($payload['payload']) ? json_encode($payload['payload']) : ($payload['payload'] ?? ''),
-            'headers' => is_array($payload['headers']) ? json_encode($payload['headers']) : ($payload['headers'] ?? ''),
+            'body' => is_array($payload['payload'] ?? null) ? json_encode($payload['payload']) : ($payload['payload'] ?? ''),
+            'headers' => is_array($payload['headers'] ?? null) ? json_encode($payload['headers']) : ($payload['headers'] ?? ''),
         ];
 
         $preparedInputs = [];

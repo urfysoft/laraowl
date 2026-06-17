@@ -8,6 +8,7 @@ use App\Models\Team;
 use App\Models\Threshold;
 use App\Services\AlertService;
 use App\Services\IngestService;
+use App\Services\SecurityService;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Mockery;
 use Tests\TestCase;
@@ -38,7 +39,7 @@ class ThresholdMonitoringTest extends TestCase
             ->with(Mockery::type(Issue::class));
 
         // 4. Ingest a record that exceeds threshold
-        $ingestService = new IngestService($alertService);
+        $ingestService = new IngestService($alertService, app(SecurityService::class));
 
         $records = [
             [
@@ -85,7 +86,7 @@ class ThresholdMonitoringTest extends TestCase
         $alertService = Mockery::mock(AlertService::class);
         $alertService->shouldNotReceive('notifySlowPerformance');
 
-        $ingestService = new IngestService($alertService);
+        $ingestService = new IngestService($alertService, app(SecurityService::class));
 
         $records = [
             [

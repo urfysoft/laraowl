@@ -37,6 +37,8 @@ Route::get('/', function () {
     return redirect('/dashboard');
 })->name('home');
 
+require __DIR__.'/settings.php';
+
 Route::prefix('{current_team}/{project}')
     ->middleware(['auth', 'verified', EnsureTeamMembership::class, EnsureProjectExists::class])
     ->group(function () {
@@ -147,5 +149,3 @@ Route::middleware(['auth', 'verified'])->group(function () {
     Route::get('teams/create', [TeamController::class, 'create'])->name('teams.create');
     Route::post('teams', [TeamController::class, 'store'])->name('teams.store');
 });
-
-require __DIR__.'/settings.php';

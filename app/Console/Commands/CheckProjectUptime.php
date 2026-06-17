@@ -48,12 +48,13 @@ class CheckProjectUptime extends Command
 
     protected function performUptimeChecks(AlertService $alertService)
     {
-        $projects = Project::whereNotNull('url')
-            ->where(function ($query) {
-                $query->whereNull('last_uptime_check_at')
-                    ->orWhereRaw('last_uptime_check_at + INTERVAL uptime_check_interval SECOND <= NOW()');
-            })
-            ->get();
+        $projects = Project::whereNotNull('url')->get()->filter(function ($project) {
+            if (is_null($project->last_uptime_check_at)) {
+                return true;
+            }
+
+            return $project->last_uptime_check_at->addSeconds($project->uptime_check_interval)->isPast();
+        });
 
         foreach ($projects as $project) {
             $this->checkUptime($project, $alertService);
@@ -68,7 +69,7 @@ class CheckProjectUptime extends Command
         $error = null;
 
         try {
-            $response = Http::timeout(10)->get($project->url);
+            $response = Http::retry(2, 1000, throw: false)->timeout(10)->get($project->url);
             $statusCode = $response->status();
 
             if ($response->failed()) {

@@ -8,6 +8,12 @@
         "framework"
     ],
     "license": "Apache-2.0",
+    "authors": [
+        {
+            "name": "Abdelmjid Saber",
+            "homepage": "https://github.com/megoxv"
+        }
+    ],
     "require": {
         "php": "^8.3",
         "inertiajs/inertia-laravel": "^3.0",
