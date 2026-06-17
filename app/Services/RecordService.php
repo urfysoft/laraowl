@@ -63,7 +63,7 @@ class RecordService
                 ->forPeriod($period, $from, $to)
                 ->select([
                     DB::raw("JSON_UNQUOTE(COALESCE(JSON_EXTRACT(payload, '$.method'), 'GET')) as method"),
-                    DB::raw("JSON_UNQUOTE(COALESCE(JSON_EXTRACT(payload, '$.path'), '/')) as path"),
+                    DB::raw("JSON_UNQUOTE(COALESCE(JSON_EXTRACT(payload, '$.route_path'), '/')) as path"),
                     'fingerprint as hash',
                     DB::raw('COUNT(*) as total'),
                     DB::raw("SUM(CASE WHEN JSON_UNQUOTE(JSON_EXTRACT(payload, '$.status_code')) BETWEEN 100 AND 399 THEN 1 ELSE 0 END) as ok_count"),
