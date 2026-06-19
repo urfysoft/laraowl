@@ -104,7 +104,9 @@ class RecordService
         $status = $this->jsonText('status');
         $user = $this->jsonValue('user');
         $userDistinct = $this->jsonDistinct('user');
+        $userId = "COALESCE({$this->jsonText('user.id')}, {$this->jsonText('user')}, 'Anonymous')";
         $userIdentifier = "COALESCE({$this->jsonText('user.name')}, {$this->jsonText('user_name')}, {$this->jsonText('user')}, 'Anonymous')";
+        $userEmail = "COALESCE({$this->jsonText('user.email')}, {$this->jsonText('user_email')}, '')";
 
         $requestStats = (clone $records)->ofType('request')
             ->select([
@@ -130,11 +132,13 @@ class RecordService
         $impactedUsers = (clone $records)->ofType('exception')
             ->whereRaw("{$user} IS NOT NULL")
             ->select([
+                DB::raw("{$userId} as user_id"),
                 DB::raw("{$userIdentifier} as user_identifier"),
+                DB::raw("{$userEmail} as user_email"),
                 DB::raw('COUNT(*) as error_count'),
                 DB::raw('MAX(created_at) as last_seen'),
             ])
-            ->groupBy('user_identifier')
+            ->groupBy('user_id', 'user_identifier', 'user_email')
             ->orderBy('error_count', 'desc')
             ->limit(5)
             ->get();
@@ -142,13 +146,18 @@ class RecordService
         $activeUsers = (clone $records)->ofType('request')
             ->whereRaw("{$user} IS NOT NULL")
             ->select([
+                DB::raw("{$userId} as user_id"),
                 DB::raw("{$userIdentifier} as user_identifier"),
+                DB::raw("{$userEmail} as user_email"),
                 DB::raw('COUNT(*) as request_count'),
             ])
-            ->groupBy('user_identifier')
+            ->groupBy('user_id', 'user_identifier', 'user_email')
             ->orderBy('request_count', 'desc')
             ->limit(5)
             ->get();
+
+        $this->enrichUserRows($project, $impactedUsers);
+        $this->enrichUserRows($project, $activeUsers);
 
         return [
             'total_requests' => $requestStats->total ?? 0,
@@ -202,7 +211,7 @@ class RecordService
         $totalAuthRequests = (clone $records)->ofType('request')->whereRaw("{$user} IS NOT NULL")->count();
 
         return [
-            'users' => $project->records()
+            'users' => $this->enrichUserPaginator($project, $project->records()
                 ->whereRaw("{$user} IS NOT NULL")
                 ->forPeriod($period, $from, $to)
                 ->select([
@@ -230,7 +239,7 @@ class RecordService
                 ])
                 ->groupBy('user_name', 'user_email', 'user_id', 'hash')
                 ->orderBy('last_seen', 'desc')
-                ->paginate(20)->withQueryString(),
+                ->paginate(20)->withQueryString()),
             'timeSeries' => $this->getDetailedTimeSeries($project, 'request', $period, $from, $to),
             'overview' => [
                 'auth_users' => $authCount,
@@ -701,6 +710,13 @@ class RecordService
             $user_id = $p['user']['id'] ?? $p['user'] ?? 'Anonymous';
         }
 
+        $details = $this->userDetailsByIds($project, [$user_id]);
+
+        if (isset($details[(string) $user_id])) {
+            $user_name = $details[(string) $user_id]['name'] ?: $user_name;
+            $user_email = $details[(string) $user_id]['email'] ?: $user_email;
+        }
+
         return [
             'user_name' => $user_name,
             'user_email' => $user_email,
@@ -951,6 +967,88 @@ class RecordService
         }
 
         return $data;
+    }
+
+    private function enrichUserPaginator(Project $project, LengthAwarePaginator $paginator): LengthAwarePaginator
+    {
+        $this->enrichUserRows($project, $paginator->getCollection());
+
+        return $paginator;
+    }
+
+    private function enrichUserRows(Project $project, iterable $rows): void
+    {
+        $ids = collect($rows)
+            ->map(fn ($row) => (string) ($row->user_id ?? $row->user_identifier ?? $row->user_name ?? ''))
+            ->filter(fn (string $id) => $id !== '' && $id !== 'Anonymous')
+            ->unique()
+            ->values();
+
+        if ($ids->isEmpty()) {
+            return;
+        }
+
+        $details = $this->userDetailsByIds($project, $ids->all());
+
+        foreach ($rows as $row) {
+            $id = (string) ($row->user_id ?? $row->user_identifier ?? $row->user_name ?? '');
+            $detail = $details[$id] ?? null;
+
+            if (! $detail) {
+                continue;
+            }
+
+            if (($row->user_name ?? $row->user_identifier ?? '') === $id && $detail['name'] !== '') {
+                $row->user_name = $detail['name'];
+                $row->user_identifier = $detail['name'];
+            }
+
+            if (($row->user_email ?? '') === '' && $detail['email'] !== '') {
+                $row->user_email = $detail['email'];
+            }
+        }
+    }
+
+    /**
+     * @param  array<int, int|string>  $ids
+     * @return array<string, array{name: string, email: string}>
+     */
+    private function userDetailsByIds(Project $project, array $ids): array
+    {
+        $ids = collect($ids)
+            ->map(fn (int|string $id): string => (string) $id)
+            ->filter(fn (string $id): bool => $id !== '' && $id !== 'Anonymous')
+            ->unique()
+            ->values();
+
+        if ($ids->isEmpty()) {
+            return [];
+        }
+
+        $details = [];
+
+        $project->records()
+            ->ofType('user')
+            ->whereIn(DB::raw($this->jsonText('id')), $ids->all())
+            ->latest()
+            ->get(['payload'])
+            ->each(function ($record) use (&$details): void {
+                $payload = $record->payload;
+                $id = (string) ($payload['id'] ?? '');
+
+                if ($id === '' || isset($details[$id])) {
+                    return;
+                }
+
+                $username = (string) ($payload['username'] ?? '');
+
+                $details[$id] = [
+                    'name' => (string) ($payload['name'] ?? ''),
+                    'email' => filter_var($payload['email'] ?? $username, FILTER_VALIDATE_EMAIL) ? (string) ($payload['email'] ?? $username) : '',
+                ];
+            });
+
+        return $details;
     }
 
     public function getUptimeStats(Project $project, ?string $period = null, ?string $from = null, ?string $to = null): array
