@@ -137,9 +137,48 @@ Set custom performance budgets per project:
 
 ---
 
-## Quick Start
+# Quick Start
 
-### Prerequisites
+## Server Installation
+
+Choose one of the following methods to install the LaraOwl server:
+
+### Docker
+
+This project comes with a custom `Dockerfile` and `docker-compose.yml` for easy deployment. To get started:
+
+```bash
+
+  
+```
+
+#### Changes in `.env` for docker configuration:
+```dotenv
+DB_CONNECTION=pgsql
+DB_HOST=db
+
+BROADCAST_DRIVER=reverb
+BROADCAST_CONNECTION=reverb
+
+QUEUE_CONNECTION=redis
+CACHE_STORE=redis
+REDIS_HOST=redis
+
+
+REVERB_HOST="reverb"
+REVERB_SERVER_HOST=0.0.0.0
+REVERB_SERVER_PORT=8080
+
+VITE_REVERB_HOST="ws.laraowl.test"
+VITE_REVERB_PORT="80"
+VITE_REVERB_SCHEME="https"
+```
+
+### 
+
+#### Using Composer
+
+**Requirements:**
 
 - PHP 8.3+
 - Node.js 18+
@@ -147,18 +186,12 @@ Set custom performance budgets per project:
 - MySQL 8.0+ or PostgreSQL
 - A queue worker
 
-### Installation
-
-Choose one of the following methods to install the LaraOwl server:
-
-#### Using Composer
 ```bash
 composer create-project laraowl/laraowl laraowl
 cd laraowl
 ```
-
-#### Finalizing Setup
 Once the files are ready, complete the setup:
+
 ```bash
 # Install frontend dependencies
 npm install

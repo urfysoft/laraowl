@@ -2,6 +2,9 @@ name: laraowl
 services:
 
   app:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile
     image: laraowl:${APP_VERSION:-latest}
     restart: unless-stopped
     ports:
@@ -16,8 +19,8 @@ services:
     networks:
       - laraowl-network
     volumes:
-      - storage:/usr/share/nginx/html/storage:rw
-      - public:/usr/share/nginx/html/public:rw
+      - storage:/usr/share/caddy/html/storage:rw
+      - public:/usr/share/caddy/html/public:rw
 
   horizon:
     image: laraowl:${APP_VERSION:-latest}
@@ -35,8 +38,8 @@ services:
     networks:
       - laraowl-network
     volumes:
-      - storage:/usr/share/nginx/html/storage:rw
-      - public:/usr/share/nginx/html/public:rw
+      - storage:/usr/share/caddy/html/storage:rw
+      - public:/usr/share/caddy/html/public:rw
 
   schedule-worker:
     image: laraowl:${APP_VERSION:-latest}
@@ -54,8 +57,8 @@ services:
     networks:
       - laraowl-network
     volumes:
-      - storage:/usr/share/nginx/html/storage:rw
-      - public:/usr/share/nginx/html/public:rw
+      - storage:/usr/share/caddy/html/storage:rw
+      - public:/usr/share/caddy/html/public:rw
 
   reverb:
     image: laraowl:${APP_VERSION:-latest}
@@ -77,8 +80,8 @@ services:
     networks:
       - laraowl-network
 
-  nginx:
-    image: nginx:1-alpine
+  caddy:
+    image: caddy:2-alpine
     restart: unless-stopped
     depends_on:
       app:
@@ -87,11 +90,13 @@ services:
       - 80:80
       - 443:443
     volumes:
-      - ./docker/nginx.conf:/etc/nginx/templates/default.conf.template
-      - storage:/usr/share/nginx/html/storage:rw
-      - public:/usr/share/nginx/html/public:ro
+      - ./docker/Caddyfile:/etc/caddy/Caddyfile
+      - storage:/usr/share/caddy/html/storage:rw
+      - public:/usr/share/caddy/html/public:ro
+      - caddy_data:/data
+      - caddy_config:/config
     healthcheck:
-      test: [ "CMD-SHELL", "curl -f -s -k https://localhost/" ]
+      test: ["CMD", "wget", "--no-check-certificate", "--quiet", "--spider", "https://localhost/"]
       interval: 10s
       timeout: 5s
       retries: 3
@@ -143,6 +148,8 @@ volumes:
   redis-data:
   storage:
   public:
+  caddy_data:
+  caddy_config:
 
 networks:
   laraowl-network:

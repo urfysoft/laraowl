@@ -1,0 +1,32 @@
+{$APP_HOSTNAME}, ws.{$APP_HOSTNAME}, localhost {
+    root * /usr/share/caddy/html/public
+
+    # Allow large file uploads
+    request_body {
+        max_size 100mb
+    }
+
+    # Serve storage files directly
+    handle_path /storage/* {
+        root * /usr/share/caddy/html/storage/app/public
+        file_server
+        header Cache-Control "public, max-age=31536000"
+    }
+
+    # Proxy Reverb WebSocket connection
+    handle /app* {
+        reverse_proxy reverb:8080
+    }
+
+    # Handle PHP files with FastCGI
+    handle {
+        php_fastcgi app:9000
+        file_server
+    }
+
+    # Logging
+    log {
+        output stdout
+        format console
+    }
+}
