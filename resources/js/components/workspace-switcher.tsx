@@ -42,17 +42,18 @@ export function WorkspaceSwitcher({
     }, [props.teams, search]);
 
     const switchProject = (project: any) => {
-        if (!currentProject) {
-            router.visit(`/${currentTeam.slug}/${project.slug}/dashboard`);
-
-            return;
-        }
+        const projectTeam =
+            (props.teams ?? []).find((t: any) => t.id === project.team_id) ??
+            currentTeam;
+        const newPrefix = `/${projectTeam.slug}/${project.slug}`;
 
         const currentUrl = window.location.pathname;
-        const oldPrefix = `/${currentTeam.slug}/${currentProject.slug}`;
-        const newPrefix = `/${currentTeam.slug}/${project.slug}`;
+        const oldPrefix =
+            currentTeam && currentProject
+                ? `/${currentTeam.slug}/${currentProject.slug}`
+                : null;
 
-        if (currentUrl.includes(oldPrefix)) {
+        if (oldPrefix && currentUrl.includes(oldPrefix)) {
             router.visit(currentUrl.replace(oldPrefix, newPrefix));
         } else {
             router.visit(newPrefix + '/dashboard');
