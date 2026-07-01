@@ -7,6 +7,11 @@
 </p>
 
 <p align="center">
+  <a href="https://laraowl.mintlify.site"><img src="https://img.shields.io/badge/Docs-laraowl-F59E0B?style=for-the-badge&logo=readthedocs&logoColor=white" alt="Documentation"></a>
+</p>
+
+<p align="center">
+  <a href="https://laraowl.mintlify.site"><b>Documentation</b></a> •
   <a href="#features">Features</a> •
   <a href="#quick-start">Quick Start</a> •
   <a href="#client-integration">Client Integration</a> •
@@ -146,6 +151,8 @@ Set custom performance budgets per project:
 ---
 
 # Quick Start
+
+> For the full guide — installation, configuration, and troubleshooting — see the **[LaraOwl Documentation](https://laraowl.mintlify.site)**.
 
 ## Server Installation
 
