@@ -20,7 +20,7 @@ class IntegrationService
 
         $title = '🚨 New '.strtoupper($issue->type).' Alert';
         $message = "*{$issue->title}*\n{$issue->message}";
-        $url = config('app.url')."/projects/{$issue->project->slug}/issues/{$issue->id}";
+        $url = $issue->url();
 
         foreach ($integrations as $integration) {
             $this->send($integration, $title, $message, [

@@ -28,6 +28,23 @@ class Issue extends Model
         'last_seen_at' => 'datetime',
     ];
 
+    /**
+     * Get the absolute URL to this issue.
+     *
+     * Built against the configured app URL so it stays correct when generated
+     * outside of an HTTP request, such as from a queued job or scheduled command.
+     */
+    public function url(): string
+    {
+        $this->loadMissing('project.team');
+
+        return rtrim(config('app.url'), '/').route('issues.show', [
+            'current_team' => $this->project->team,
+            'project' => $this->project,
+            'issue' => $this,
+        ], absolute: false);
+    }
+
     public function project(): BelongsTo
     {
         return $this->belongsTo(Project::class);

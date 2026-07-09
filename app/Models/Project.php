@@ -77,6 +77,22 @@ class Project extends Model implements HasMedia
         return 'slug';
     }
 
+    /**
+     * Get the absolute URL to this project's dashboard.
+     *
+     * Built against the configured app URL so it stays correct when generated
+     * outside of an HTTP request, such as from a queued job or scheduled command.
+     */
+    public function dashboardUrl(): string
+    {
+        $this->loadMissing('team');
+
+        return rtrim(config('app.url'), '/').route('dashboard', [
+            'current_team' => $this->team,
+            'project' => $this,
+        ], absolute: false);
+    }
+
     public function team(): BelongsTo
     {
         return $this->belongsTo(Team::class);
