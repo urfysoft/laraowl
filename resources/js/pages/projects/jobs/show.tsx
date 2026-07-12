@@ -1,5 +1,6 @@
-import { Head, Link, usePage } from '@inertiajs/react';
+﻿import { Head, Link, usePage } from '@inertiajs/react';
 import { ArrowUpRight, Zap } from 'lucide-react';
+import { Pagination } from '@/components/pagination';
 import { Badge } from '@/components/ui/badge';
 import {
     Table,
@@ -123,6 +124,7 @@ export default function JobShow({
                             ))}
                         </TableBody>
                     </Table>
+                    <Pagination links={records.links} meta={records} />
                 </div>
             </div>
         </>

@@ -1,6 +1,7 @@
-import { Head, Link, usePage } from '@inertiajs/react';
+﻿import { Head, Link, usePage } from '@inertiajs/react';
 import { ArrowUpRight, ChevronDown } from 'lucide-react';
 import { useState } from 'react';
+import { Pagination } from '@/components/pagination';
 import { Badge } from '@/components/ui/badge';
 import { Card } from '@/components/ui/card';
 import {
@@ -266,6 +267,7 @@ export default function ExceptionDetails({
                                 ))}
                             </TableBody>
                         </Table>
+                        <Pagination links={records.links} meta={records} />
                     </div>
                 </div>
             </div>

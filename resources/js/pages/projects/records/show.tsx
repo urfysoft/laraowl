@@ -28,6 +28,7 @@ export default function RecordShow({
     usePage();
     const payload = record.payload || {};
     const [expandedHeaders, setExpandedHeaders] = useState(false);
+    const [expandedPayload, setExpandedPayload] = useState(false);
 
     const getStatusColor = (status: number) => {
         if (status >= 500) {
@@ -42,13 +43,19 @@ export default function RecordShow({
     };
 
     const queries = relatedRecords.filter((r) => r.type === 'query');
-    const logs = relatedRecords.filter((r) => r.type === 'log');
+
+    const countOf = (value: unknown) =>
+        typeof value === 'number'
+            ? value
+            : Array.isArray(value)
+              ? value.length
+              : 0;
 
     const events = [
         {
             label: 'QUERIES',
             icon: Database,
-            count: queries.length,
+            count: countOf(payload.queries),
             duration:
                 queries.reduce((acc, r) => acc + (r.payload.duration || 0), 0) /
                 1000,
@@ -56,34 +63,55 @@ export default function RecordShow({
         {
             label: 'MAIL',
             icon: Mail,
-            count: payload.mail_count || 0,
+            count: countOf(payload.mail),
             duration: 0,
         },
         {
             label: 'CACHE',
             icon: Layers,
-            count: payload.cache_count || 0,
+            count: countOf(payload.cache_events),
             duration: 0,
         },
         {
             label: 'OUTGOING REQUESTS',
             icon: Globe,
-            count: payload.outgoing_count || 0,
+            count: countOf(payload.outgoing_requests),
             duration: 0,
         },
         {
             label: 'NOTIFICATIONS',
             icon: Bell,
-            count: payload.notification_count || 0,
+            count: countOf(payload.notifications),
             duration: 0,
         },
         {
             label: 'QUEUED JOBS',
             icon: Activity,
-            count: payload.job_count || 0,
+            count: countOf(payload.jobs_queued),
             duration: 0,
         },
     ];
+
+    const totalEvents = events.reduce((acc, event) => acc + event.count, 0);
+
+    const subLabel = (sub: any) => {
+        const p = sub.payload || {};
+
+        switch (sub.type) {
+            case 'query':
+                return p.sql;
+            case 'outgoing-request':
+                return p.url || p.host;
+            case 'mail':
+                return p.subject || p.class;
+            case 'notification':
+                return p.class;
+            case 'cache-event':
+                return `${p.type || 'cache'} ${p.key || ''}`.trim();
+            default:
+                return p.message || 'Event';
+        }
+    };
 
     const isRequest = record.type === 'request';
     const isJob = ['job-attempt', 'queued-job'].includes(record.type);
@@ -276,7 +304,7 @@ export default function RecordShow({
                                     <span>
                                         Events{' '}
                                         <span className="ml-1 text-foreground">
-                                            {queries.length + logs.length}
+                                            {totalEvents}
                                         </span>
                                     </span>
                                     <span>
@@ -361,6 +389,71 @@ export default function RecordShow({
                     )}
                 </Card>
 
+                {/* Request Payload Card */}
+                {(() => {
+                    let body = payload.payload;
+
+                    if (typeof body === 'string') {
+                        try {
+                            body = JSON.parse(body);
+                        } catch {
+                            // Leave non-JSON bodies as their raw string.
+                        }
+                    }
+
+                    const isEmpty =
+                        body === null ||
+                        body === undefined ||
+                        body === '' ||
+                        (typeof body === 'object' &&
+                            Object.keys(body).length === 0);
+
+                    if (isEmpty) {
+                        return null;
+                    }
+
+                    return (
+                        <Card className="border-border bg-card shadow-2xl">
+                            <div
+                                className="flex cursor-pointer items-center justify-between p-4 transition-colors hover:bg-muted/30"
+                                onClick={() =>
+                                    setExpandedPayload(!expandedPayload)
+                                }
+                            >
+                                <h3 className="text-xs font-bold text-foreground uppercase">
+                                    Request Payload
+                                </h3>
+                                <div className="flex h-5 w-5 items-center justify-center rounded bg-muted">
+                                    {expandedPayload ? (
+                                        <ChevronDown className="h-3 w-3" />
+                                    ) : (
+                                        <ChevronRight className="h-3 w-3" />
+                                    )}
+                                </div>
+                            </div>
+                            {expandedPayload && (
+                                <div className="border-t border-border p-6 text-xs">
+                                    <SyntaxHighlighter
+                                        language="json"
+                                        style={vscDarkPlus}
+                                        customStyle={{
+                                            margin: 0,
+                                            borderRadius: '0.5rem',
+                                            border: '1px solid hsl(var(--border))',
+                                        }}
+                                        wrapLines={true}
+                                        wrapLongLines={true}
+                                    >
+                                        {typeof body === 'string'
+                                            ? body
+                                            : JSON.stringify(body, null, 4)}
+                                    </SyntaxHighlighter>
+                                </div>
+                            )}
+                        </Card>
+                    );
+                })()}
+
                 {/* Timeline Card */}
                 <Card className="border-border bg-card p-8 shadow-2xl">
                     <div className="mb-8 flex items-center justify-between">
@@ -442,11 +535,7 @@ export default function RecordShow({
                                                         {sub.type}
                                                     </span>
                                                     <span className="line-clamp-1 max-w-[400px] font-mono text-[10px] text-muted-foreground">
-                                                        {sub.type === 'query'
-                                                            ? sub.payload.sql
-                                                            : sub.payload
-                                                                  .message ||
-                                                              'Log event'}
+                                                        {subLabel(sub)}
                                                     </span>
                                                 </div>
                                                 <div

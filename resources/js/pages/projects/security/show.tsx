@@ -1,4 +1,4 @@
-import { Head, Link, usePage } from '@inertiajs/react';
+﻿import { Head, Link, usePage } from '@inertiajs/react';
 import {
     Shield,
     ArrowUpRight,
@@ -6,6 +6,7 @@ import {
     Clock,
     Globe,
 } from 'lucide-react';
+import { Pagination } from '@/components/pagination';
 import { Badge } from '@/components/ui/badge';
 import { Card, CardContent } from '@/components/ui/card';
 import {
@@ -75,7 +76,7 @@ export default function SecurityDetails({
                                         meta.last_seen_at,
                                     ).toLocaleString()}
                                 </span>
-                                <span>•</span>
+                                <span>â€¢</span>
                                 <span className="flex items-center gap-1 font-mono tracking-normal lowercase">
                                     {hash}
                                 </span>
@@ -203,7 +204,7 @@ export default function SecurityDetails({
                                                                     {t.type}{' '}
                                                                     {t.detail
                                                                         ? `(${t.detail})`
-                                                                        : `→ ${t.source}`}
+                                                                        : `â†’ ${t.source}`}
                                                                 </Badge>
                                                             ),
                                                         )}
@@ -352,6 +353,7 @@ export default function SecurityDetails({
                                 ))}
                             </TableBody>
                         </Table>
+                        <Pagination links={records.links} meta={records} />
                     </Card>
                 </section>
             </div>

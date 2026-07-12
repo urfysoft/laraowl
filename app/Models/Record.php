@@ -2,6 +2,7 @@
 
 namespace App\Models;
 
+use Carbon\CarbonInterface;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\MassPrunable;
 use Illuminate\Database\Eloquent\Model;
@@ -20,6 +21,10 @@ class Record extends Model
         'type',
         'payload',
         'fingerprint',
+        'user_key',
+        'ip',
+        'trace_id',
+        'message',
         'created_at',
     ];
 
@@ -57,13 +62,26 @@ class Record extends Model
             return $query->whereBetween('created_at', [$from, $to]);
         }
 
+        // Floored to the minute so a raw count and the minute-bucketed rollups
+        // cover exactly the same window, which lets the rollups supply a
+        // paginator's total instead of a COUNT(*) over every record.
+        return $query->where('created_at', '>=', static::periodStartsAt($period)->startOfMinute());
+    }
+
+    /**
+     * Resolve a dashboard period into the instant its window opens.
+     *
+     * An unrecognised period must never widen the window: returning the query
+     * unfiltered turned every such call into a full table scan.
+     */
+    public static function periodStartsAt(?string $period): CarbonInterface
+    {
         return match ($period) {
-            '1h' => $query->where('created_at', '>=', now()->subHour()),
-            '24h' => $query->where('created_at', '>=', now()->subDay()),
-            '7d' => $query->where('created_at', '>=', now()->subDays(7)),
-            '14d' => $query->where('created_at', '>=', now()->subDays(14)),
-            '30d' => $query->where('created_at', '>=', now()->subDays(30)),
-            default => $query,
+            '1h' => now()->subHour(),
+            '7d' => now()->subDays(7),
+            '14d' => now()->subDays(14),
+            '30d' => now()->subDays(30),
+            default => now()->subDay(),
         };
     }
 

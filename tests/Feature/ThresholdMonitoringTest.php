@@ -8,6 +8,7 @@ use App\Models\Team;
 use App\Models\Threshold;
 use App\Services\AlertService;
 use App\Services\IngestService;
+use App\Services\RollupWriter;
 use App\Services\SecurityService;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Mockery;
@@ -39,13 +40,13 @@ class ThresholdMonitoringTest extends TestCase
             ->with(Mockery::type(Issue::class));
 
         // 4. Ingest a record that exceeds threshold
-        $ingestService = new IngestService($alertService, app(SecurityService::class));
+        $ingestService = new IngestService($alertService, app(SecurityService::class), app(RollupWriter::class));
 
         $records = [
             [
                 't' => 'request',
                 'path' => '/api/test',
-                'duration' => 500, // Exceeds 200ms
+                'duration' => 500_000, // 500ms in microseconds, exceeds the 200ms threshold
                 'method' => 'GET',
             ],
         ];
@@ -86,13 +87,13 @@ class ThresholdMonitoringTest extends TestCase
         $alertService = Mockery::mock(AlertService::class);
         $alertService->shouldNotReceive('notifySlowPerformance');
 
-        $ingestService = new IngestService($alertService, app(SecurityService::class));
+        $ingestService = new IngestService($alertService, app(SecurityService::class), app(RollupWriter::class));
 
         $records = [
             [
                 't' => 'request',
                 'path' => '/api/safe',
-                'duration' => 100, // Within 500ms
+                'duration' => 100_000, // 100ms in microseconds, within the 500ms threshold
                 'method' => 'GET',
             ],
         ];
@@ -103,5 +104,35 @@ class ThresholdMonitoringTest extends TestCase
             'project_id' => $project->id,
             'title' => 'Slow Route: /api/safe',
         ]);
+    }
+
+    public function test_a_threshold_is_compared_in_the_same_unit_as_the_duration()
+    {
+        $team = Team::factory()->create();
+        $project = Project::factory()->create(['team_id' => $team->id]);
+
+        Threshold::create([
+            'project_id' => $project->id,
+            'type' => 'route',
+            'key' => '/api/edge',
+            'value' => 500, // 500 milliseconds
+            'is_enabled' => true,
+        ]);
+
+        $alertService = Mockery::mock(AlertService::class);
+        $alertService->shouldReceive('notifySlowPerformance')->once();
+        $ingestService = new IngestService($alertService, app(SecurityService::class), app(RollupWriter::class));
+
+        // 499ms then 501ms, both in microseconds. The old code compared the raw
+        // microseconds against 500, so 499_000 already "exceeded" 500.
+        $ingestService->ingest($project, [
+            ['t' => 'request', 'path' => '/api/edge', 'duration' => 499_000, 'method' => 'GET'],
+        ]);
+        $this->assertDatabaseMissing('issues', ['project_id' => $project->id, 'title' => 'Slow Route: /api/edge']);
+
+        $ingestService->ingest($project, [
+            ['t' => 'request', 'path' => '/api/edge', 'duration' => 501_000, 'method' => 'GET'],
+        ]);
+        $this->assertDatabaseHas('issues', ['project_id' => $project->id, 'title' => 'Slow Route: /api/edge']);
     }
 }

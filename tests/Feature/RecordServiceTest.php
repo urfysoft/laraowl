@@ -1,34 +1,30 @@
 <?php
 
 use App\Models\Project;
-use App\Models\Record;
+use App\Services\IngestService;
 use App\Services\RecordService;
 
 it('handles non numeric outgoing request status values without SQL errors', function () {
     $project = Project::factory()->create();
 
-    Record::create([
-        'project_id' => $project->id,
-        'type' => 'outgoing-request',
-        'fingerprint' => 'failed-status',
-        'payload' => [
+    // Ingested rather than inserted directly, so the rollups the overview now
+    // reads from are written. The client always sends `_group`, which becomes
+    // the fingerprint the host list groups on.
+    app(IngestService::class)->ingest($project, [
+        [
+            't' => 'outgoing-request',
+            '_group' => 'failed-status',
             'host' => 'api.example.com',
             'status' => 'failed',
             'duration' => 125,
         ],
-        'created_at' => now(),
-    ]);
-
-    Record::create([
-        'project_id' => $project->id,
-        'type' => 'outgoing-request',
-        'fingerprint' => 'ok-status',
-        'payload' => [
+        [
+            't' => 'outgoing-request',
+            '_group' => 'ok-status',
             'host' => 'api.example.com',
             'status_code' => 200,
             'duration' => 75,
         ],
-        'created_at' => now(),
     ]);
 
     $stats = app(RecordService::class)->getOutgoingRequestStats($project, '24h');

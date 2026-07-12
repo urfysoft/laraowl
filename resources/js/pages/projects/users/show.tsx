@@ -1,5 +1,6 @@
-import { Head, Link, usePage } from '@inertiajs/react';
+﻿import { Head, Link, usePage } from '@inertiajs/react';
 import { User, Search, ArrowUpRight, Activity } from 'lucide-react';
+import { Pagination } from '@/components/pagination';
 import { Badge } from '@/components/ui/badge';
 import { Card, CardContent } from '@/components/ui/card';
 import {
@@ -266,6 +267,7 @@ export default function UserShow({
                                 ))}
                             </TableBody>
                         </Table>
+                        <Pagination links={records.links} meta={records} />
                     </div>
                 </div>
             </div>

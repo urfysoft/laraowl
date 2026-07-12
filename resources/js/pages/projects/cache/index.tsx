@@ -1,6 +1,5 @@
-import { Head, router, usePage } from '@inertiajs/react';
+﻿import { Head, usePage } from '@inertiajs/react';
 import { Database, Layers, FileCode } from 'lucide-react';
-import { useEffect } from 'react';
 import { BarChart, Bar, ResponsiveContainer, Tooltip, XAxis } from 'recharts';
 import { EmptyState } from '@/components/empty-state';
 import { Pagination } from '@/components/pagination';
@@ -13,6 +12,7 @@ import {
     TableHeader,
     TableRow,
 } from '@/components/ui/table';
+import { useLiveReload } from '@/hooks/use-live-reload';
 import AppLayout from '@/layouts/app-layout';
 import { formatCompactNumber } from '@/lib/utils';
 
@@ -28,21 +28,7 @@ export default function CacheIndex({
     const { props }: any = usePage();
     const currentProject = props.current_project || props.currentProject;
 
-    useEffect(() => {
-        if (!currentProject?.id || !window.Echo) {
-            return;
-        }
-
-        const channel = window.Echo.private(
-            `project.${currentProject.id}`,
-        ).listen('.ProjectDataIngested', () => {
-            router.reload({ preserveScroll: true, preserveState: true } as any);
-        });
-
-        return () => {
-            channel.stopListening('.ProjectDataIngested');
-        };
-    }, [currentProject?.id]);
+    useLiveReload(currentProject?.id);
 
     const data = keys.data || [];
     const totalWrites = data.reduce(

@@ -1,6 +1,6 @@
-import { Head, Link, usePage, router } from '@inertiajs/react';
+﻿import { Head, Link, usePage } from '@inertiajs/react';
 import { ArrowUpRight, X, Terminal, Globe, FileText } from 'lucide-react';
-import React, { useState, useEffect } from 'react';
+import React, { useState } from 'react';
 import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter';
 import { vscDarkPlus } from 'react-syntax-highlighter/dist/esm/styles/prism';
 import { EmptyState } from '@/components/empty-state';
@@ -14,6 +14,7 @@ import {
     TableHeader,
     TableRow,
 } from '@/components/ui/table';
+import { useLiveReload } from '@/hooks/use-live-reload';
 import AppLayout from '@/layouts/app-layout';
 import { formatCompactNumber, formatValue } from '@/lib/utils';
 import { show as showRecord } from '@/routes/records';
@@ -37,21 +38,7 @@ export default function LogsIndex({ records }: { records: any }) {
             { mergeQuery: {} },
         );
 
-    useEffect(() => {
-        if (!currentProject?.id || !window.Echo) {
-            return;
-        }
-
-        const channel = window.Echo.private(
-            `project.${currentProject.id}`,
-        ).listen('.ProjectDataIngested', () => {
-            router.reload({ preserveScroll: true, preserveState: true } as any);
-        });
-
-        return () => {
-            channel.stopListening('.ProjectDataIngested');
-        };
-    }, [currentProject?.id]);
+    useLiveReload(currentProject?.id);
 
     const getLevelColor = (level: string) => {
         const l = level.toLowerCase();

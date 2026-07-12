@@ -6,6 +6,7 @@ use App\Events\ProjectDataIngested;
 use App\Models\Issue;
 use App\Models\Project;
 use App\Models\Record;
+use App\Models\Threshold;
 use Illuminate\Support\Facades\DB;
 
 class IngestService
@@ -14,10 +15,20 @@ class IngestService
 
     protected SecurityService $securityService;
 
-    public function __construct(AlertService $alertService, SecurityService $securityService)
+    protected RollupWriter $rollupWriter;
+
+    /**
+     * Cached for the lifetime of one ingest call.
+     *
+     * @var array<string, Threshold>|null
+     */
+    protected ?array $thresholds = null;
+
+    public function __construct(AlertService $alertService, SecurityService $securityService, RollupWriter $rollupWriter)
     {
         $this->alertService = $alertService;
         $this->securityService = $securityService;
+        $this->rollupWriter = $rollupWriter;
     }
 
     /**
@@ -25,20 +36,34 @@ class IngestService
      */
     public function ingest(Project $project, array $records): void
     {
+        $this->thresholds = null;
+
         DB::transaction(function () use ($project, $records) {
+            $batch = [];
+
             foreach ($records as $data) {
                 $type = $data['t'] ?? null;
                 if (! $type) {
                     continue;
                 }
 
-                // The entire $data array is effectively the payload in this flat format
                 $record = $project->records()->create([
                     'type' => $type,
                     'payload' => $data,
                     'fingerprint' => $this->calculateFingerprint($type, $data),
+                    'user_key' => $this->rollupWriter->rawUserKeyFor($data),
+                    'ip' => $this->rollupWriter->ipFor($data),
+                    'trace_id' => $this->rollupWriter->traceIdFor($data),
+                    'message' => $this->rollupWriter->messageFor($type, $data),
                     'created_at' => now(),
                 ]);
+
+                $batch[] = [
+                    'type' => $type,
+                    'payload' => $data,
+                    'fingerprint' => $record->fingerprint,
+                    'created_at' => $record->created_at,
+                ];
 
                 if ($type === 'exception') {
                     $this->handleException($project, $record);
@@ -71,9 +96,9 @@ class IngestService
 
                 $this->checkThresholds($project, $record);
             }
+            $this->rollupWriter->record($project, $batch);
         });
 
-        // Broadcast real-time update to the frontend
         ProjectDataIngested::dispatch($project);
     }
 
@@ -89,7 +114,6 @@ class IngestService
             return;
         }
 
-        // Find applicable thresholds for this project and type
         $thresholdType = match ($record->type) {
             'request' => 'route',
             'job-attempt', 'queued-job' => 'job',
@@ -115,15 +139,28 @@ class IngestService
             return;
         }
 
-        $threshold = $project->thresholds()
-            ->where('type', $thresholdType)
-            ->where('key', $key)
-            ->where('is_enabled', true)
-            ->first();
+        $threshold = $this->enabledThresholds($project)[$thresholdType.'|'.$key] ?? null;
 
-        if ($threshold && $duration > $threshold->value) {
+        // Durations arrive in microseconds; thresholds are authored in
+        // milliseconds (the UI shows "{value}ms"). Without the conversion a
+        // 500ms threshold fired at 500µs — a thousand times too eagerly.
+        if ($threshold && $duration > $threshold->value * 1000) {
             $this->handleSlowPerformance($project, $record, $threshold);
         }
+    }
+
+    /**
+     * The project's enabled thresholds, keyed by type and key.
+     *
+     * @return array<string, Threshold>
+     */
+    protected function enabledThresholds(Project $project): array
+    {
+        return $this->thresholds ??= $project->thresholds()
+            ->where('is_enabled', true)
+            ->get()
+            ->keyBy(fn ($threshold) => $threshold->type.'|'.$threshold->key)
+            ->all();
     }
 
     /**
@@ -133,7 +170,8 @@ class IngestService
     {
         $hash = md5('slow_performance_'.$threshold->type.'_'.$threshold->key);
         $title = 'Slow '.ucfirst($threshold->type).': '.$threshold->key;
-        $message = 'Duration: '.$record->payload['duration'].'ms (Threshold: '.$threshold->value.'ms)';
+        $durationMs = round($record->payload['duration'] / 1000, 2);
+        $message = 'Duration: '.$durationMs.'ms (Threshold: '.$threshold->value.'ms)';
 
         $issue = $project->issues()->firstOrCreate(
             ['hash' => $hash],

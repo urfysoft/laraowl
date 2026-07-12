@@ -3,8 +3,19 @@
 namespace App\Services;
 
 use App\Models\Project;
+use App\Models\Record;
+use App\Models\RecordGroupRollup;
+use App\Models\RecordGroupUserBucket;
+use App\Models\RecordIpBucket;
+use App\Models\RecordRollup;
+use App\Models\RecordUserBucket;
+use Carbon\Carbon;
 use Cron\CronExpression;
+use Illuminate\Database\Eloquent\Builder;
+use Illuminate\Database\Eloquent\Relations\HasMany;
 use Illuminate\Pagination\LengthAwarePaginator;
+use Illuminate\Pagination\Paginator;
+use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Str;
 
@@ -16,21 +27,23 @@ class RecordService
     public function getQuickStats(Project $project, ?string $period = null, ?string $from = null, ?string $to = null): array
     {
         $types = ['request', 'exception', 'query', 'queued-job', 'job-attempt', 'scheduled-task', 'cache-event', 'log', 'mail', 'notification', 'outgoing-request'];
+
+        $counts = RecordRollup::query()
+            ->where('project_id', $project->id)
+            ->whereIn('type', $types)
+            ->forPeriod($period, $from, $to)
+            ->select('type', DB::raw('SUM('.$this->col('count').') as total'))
+            ->groupBy('type')
+            ->pluck('total', 'type');
+
         $stats = [];
 
         foreach ($types as $type) {
-            $key = str_replace('-', '_', $type).'s';
-            $count = $project->records()->ofType($type)->forPeriod($period, $from, $to)->count();
-
-            if (isset($stats[$key])) {
-                $stats[$key] += $count;
-            } else {
-                $stats[$key] = $count;
-            }
+            $stats[str_replace('-', '_', $type).'s'] = (int) ($counts[$type] ?? 0);
         }
 
         // Aggregate jobs
-        $stats['jobs'] = ($stats['queued_jobs'] ?? 0) + ($stats['job_attempts'] ?? 0);
+        $stats['jobs'] = $stats['queued_jobs'] + $stats['job_attempts'];
 
         return $stats;
     }
@@ -43,50 +56,31 @@ class RecordService
         $allowedSorts = ['method', 'path', 'total', 'ok_count', 'client_error_count', 'server_error_count', 'avg_duration', 'p95_duration'];
         $sort = in_array($sort, $allowedSorts) ? $sort : 'total';
         $direction = $direction === 'asc' ? 'asc' : 'desc';
-        $statusCode = $this->jsonNumeric('status_code');
-        $duration = $this->jsonNumeric('duration');
-        $method = "COALESCE({$this->jsonText('method')}, 'GET')";
-        $path = "COALESCE({$this->jsonText('route_path')}, '/')";
 
-        $overview = $project->records()
-            ->ofType('request')
-            ->forPeriod($period, $from, $to)
-            ->select([
-                DB::raw('COUNT(*) as total'),
-                DB::raw("SUM(CASE WHEN {$statusCode} BETWEEN 100 AND 399 THEN 1 ELSE 0 END) as ok"),
-                DB::raw("SUM(CASE WHEN {$statusCode} BETWEEN 400 AND 499 THEN 1 ELSE 0 END) as client_error"),
-                DB::raw("SUM(CASE WHEN {$statusCode} >= 500 THEN 1 ELSE 0 END) as server_error"),
-                DB::raw("AVG({$duration}) as avg_duration"),
-                DB::raw("MAX({$duration}) as max_duration"),
-                DB::raw("MIN({$duration}) as min_duration"),
-            ])->first();
+        $overview = $this->rollupTotals($project, 'request', $period, $from, $to);
+
+        $requests = $this->groupList(
+            $project, 'request', $period, $from, $to,
+            sort: $sort,
+            direction: $direction,
+            sortMap: ['method' => 'label', 'path' => 'sublabel', 'p95_duration' => 'max_duration'],
+        )->through(function ($row) {
+            $row->method = $row->label;
+            $row->path = $row->sublabel;
+
+            return $row;
+        });
 
         return [
-            'requests' => $project->records()
-                ->ofType('request')
-                ->forPeriod($period, $from, $to)
-                ->select([
-                    DB::raw("{$method} as method"),
-                    DB::raw("{$path} as path"),
-                    'fingerprint as hash',
-                    DB::raw('COUNT(*) as total'),
-                    DB::raw("SUM(CASE WHEN {$statusCode} BETWEEN 100 AND 399 THEN 1 ELSE 0 END) as ok_count"),
-                    DB::raw("SUM(CASE WHEN {$statusCode} BETWEEN 400 AND 499 THEN 1 ELSE 0 END) as client_error_count"),
-                    DB::raw("SUM(CASE WHEN {$statusCode} >= 500 THEN 1 ELSE 0 END) as server_error_count"),
-                    DB::raw("AVG({$duration}) as avg_duration"),
-                    DB::raw("MAX({$duration}) as p95_duration"),
-                ])
-                ->groupBy('method', 'path', 'fingerprint')
-                ->orderBy($sort, $direction)
-                ->paginate(20)->withQueryString(),
+            'requests' => $requests,
             'timeSeries' => $this->getDetailedTimeSeries($project, 'request', $period, $from, $to),
             'overview' => [
-                'ok' => (int) ($overview->ok ?? 0),
-                'client_error' => (int) ($overview->client_error ?? 0),
-                'server_error' => (int) ($overview->server_error ?? 0),
-                'avg_duration' => round($overview->avg_duration ?? 0, 2),
-                'max_duration' => round($overview->max_duration ?? 0, 2),
-                'min_duration' => round($overview->min_duration ?? 0, 2),
+                'ok' => (int) $overview->ok,
+                'client_error' => (int) $overview->client_error,
+                'server_error' => (int) $overview->server_error,
+                'avg_duration' => round($this->avgDuration($overview), 2),
+                'max_duration' => round((float) ($overview->max_duration ?? 0), 2),
+                'min_duration' => round((float) ($overview->min_duration ?? 0), 2),
             ],
             'sort' => $sort,
             'direction' => $direction,
@@ -98,94 +92,43 @@ class RecordService
      */
     public function getDashboardStats(Project $project, ?string $period = null, ?string $from = null, ?string $to = null): array
     {
-        $records = $project->records()->forPeriod($period, $from, $to);
-        $statusCode = $this->jsonNumeric('status_code');
-        $duration = $this->jsonNumeric('duration');
-        $status = $this->jsonText('status');
-        $user = $this->jsonValue('user');
-        $userDistinct = $this->jsonDistinct('user');
-        $userId = "COALESCE({$this->jsonText('user.id')}, {$this->jsonText('user')}, 'Anonymous')";
-        $userIdentifier = "COALESCE({$this->jsonText('user.name')}, {$this->jsonText('user_name')}, {$this->jsonText('user')}, 'Anonymous')";
-        $userEmail = "COALESCE({$this->jsonText('user.email')}, {$this->jsonText('user_email')}, '')";
+        $requestStats = $this->rollupTotals($project, 'request', $period, $from, $to);
+        $exceptionStats = $this->rollupTotals($project, 'exception', $period, $from, $to);
+        $jobStats = $this->rollupTotals($project, ['job-attempt', 'queued-job'], $period, $from, $to);
 
-        $requestStats = (clone $records)->ofType('request')
-            ->select([
-                DB::raw('COUNT(*) as total'),
-                DB::raw("SUM(CASE WHEN {$statusCode} BETWEEN 100 AND 399 THEN 1 ELSE 0 END) as ok"),
-                DB::raw("SUM(CASE WHEN {$statusCode} BETWEEN 400 AND 499 THEN 1 ELSE 0 END) as client_error"),
-                DB::raw("SUM(CASE WHEN {$statusCode} >= 500 THEN 1 ELSE 0 END) as server_error"),
-                DB::raw("AVG({$duration}) as avg_duration"),
-                DB::raw("MAX({$duration}) as max_duration"),
-                DB::raw("MIN({$duration}) as min_duration"),
-            ])->first();
-
-        $jobStats = (clone $records)->whereIn('type', ['job-attempt', 'queued-job'])
-            ->select([
-                DB::raw('COUNT(*) as total'),
-                DB::raw("SUM(CASE WHEN {$status} = 'processed' THEN 1 ELSE 0 END) as processed"),
-                DB::raw("SUM(CASE WHEN {$status} = 'failed' THEN 1 ELSE 0 END) as failed"),
-                DB::raw("SUM(CASE WHEN {$status} = 'released' THEN 1 ELSE 0 END) as released"),
-                DB::raw("AVG({$duration}) as avg_duration"),
-                DB::raw("MAX({$duration}) as p95_duration"),
-            ])->first();
-
-        $impactedUsers = (clone $records)->ofType('exception')
-            ->whereRaw("{$user} IS NOT NULL")
-            ->select([
-                DB::raw("{$userId} as user_id"),
-                DB::raw("{$userIdentifier} as user_identifier"),
-                DB::raw("{$userEmail} as user_email"),
-                DB::raw('COUNT(*) as error_count'),
-                DB::raw('MAX(created_at) as last_seen'),
-            ])
-            ->groupBy('user_id', 'user_identifier', 'user_email')
-            ->orderBy('error_count', 'desc')
-            ->limit(5)
-            ->get();
-
-        $activeUsers = (clone $records)->ofType('request')
-            ->whereRaw("{$user} IS NOT NULL")
-            ->select([
-                DB::raw("{$userId} as user_id"),
-                DB::raw("{$userIdentifier} as user_identifier"),
-                DB::raw("{$userEmail} as user_email"),
-                DB::raw('COUNT(*) as request_count'),
-            ])
-            ->groupBy('user_id', 'user_identifier', 'user_email')
-            ->orderBy('request_count', 'desc')
-            ->limit(5)
-            ->get();
+        $impactedUsers = $this->topUsers($project, 'exception', 'error_count', $period, $from, $to);
+        $activeUsers = $this->topUsers($project, 'request', 'request_count', $period, $from, $to);
 
         $this->enrichUserRows($project, $impactedUsers);
         $this->enrichUserRows($project, $activeUsers);
 
         return [
-            'total_requests' => $requestStats->total ?? 0,
+            'total_requests' => (int) $requestStats->total,
             'request_breakdown' => [
-                'ok' => (int) ($requestStats->ok ?? 0),
-                'client_error' => (int) ($requestStats->client_error ?? 0),
-                'server_error' => (int) ($requestStats->server_error ?? 0),
+                'ok' => (int) $requestStats->ok,
+                'client_error' => (int) $requestStats->client_error,
+                'server_error' => (int) $requestStats->server_error,
             ],
             'duration_stats' => [
-                'avg' => round($requestStats->avg_duration ?? 0, 2),
-                'max' => round($requestStats->max_duration ?? 0, 2),
-                'min' => round($requestStats->min_duration ?? 0, 2),
+                'avg' => round($this->avgDuration($requestStats), 2),
+                'max' => round((float) ($requestStats->max_duration ?? 0), 2),
+                'min' => round((float) ($requestStats->min_duration ?? 0), 2),
             ],
-            'total_exceptions' => $project->records()->ofType('exception')->forPeriod($period, $from, $to)->count(),
+            'total_exceptions' => (int) $exceptionStats->total,
             'recent_issues' => $project->issues()->where('status', 'open')->latest('last_seen_at')->limit(5)->get(),
             'timeSeries' => $this->getDetailedTimeSeries($project, 'request', $period, $from, $to),
             'job_stats' => [
-                'total' => $jobStats->total ?? 0,
-                'processed' => (int) ($jobStats->processed ?? 0),
-                'failed' => (int) ($jobStats->failed ?? 0),
-                'released' => (int) ($jobStats->released ?? 0),
-                'avg_duration' => round(($jobStats->avg_duration ?? 0) / 1000, 2),
-                'p95_duration' => round(($jobStats->p95_duration ?? 0) / 1000, 2),
+                'total' => (int) $jobStats->total,
+                'processed' => (int) $jobStats->ok,
+                'failed' => (int) $jobStats->server_error,
+                'released' => (int) $jobStats->neutral,
+                'avg_duration' => round($this->avgDuration($jobStats) / 1000, 2),
+                'p95_duration' => round($this->p95Duration($jobStats) / 1000, 2),
             ],
             'impacted_users' => $impactedUsers,
             'active_users' => $activeUsers,
-            'auth_users_count' => (clone $records)->ofType('request')->whereRaw("{$user} IS NOT NULL")->distinct(DB::raw($userDistinct))->count(),
-            'guest_users_count' => (clone $records)->ofType('request')->whereRaw("{$user} IS NULL")->count(),
+            'auth_users_count' => $this->distinctUsers($project, 'request', $period, $from, $to),
+            'guest_users_count' => (int) $requestStats->total - (int) $requestStats->authed,
             'period' => $period,
             'uptime_status' => [
                 'current' => $project->last_uptime_status ?? 'unknown',
@@ -200,46 +143,39 @@ class RecordService
      */
     public function getUserStats(Project $project, ?string $period = null, ?string $from = null, ?string $to = null): array
     {
-        $records = $project->records()->forPeriod($period, $from, $to);
         $user = $this->jsonValue('user');
-        $userDistinct = $this->jsonDistinct('user');
         $statusCode = $this->jsonNumeric('status_code');
         $userHash = "MD5(COALESCE({$this->jsonText('user')}, 'Anonymous'))";
 
-        $authCount = (clone $records)->ofType('request')->whereRaw("{$user} IS NOT NULL")->distinct(DB::raw($userDistinct))->count();
-        $guestCount = (clone $records)->ofType('request')->whereRaw("{$user} IS NULL")->count();
-        $totalAuthRequests = (clone $records)->ofType('request')->whereRaw("{$user} IS NOT NULL")->count();
+        $requestTotals = $this->rollupTotals($project, 'request', $period, $from, $to);
+        $authCount = $this->distinctUsers($project, 'request', $period, $from, $to);
+        $totalAuthRequests = (int) $requestTotals->authed;
+        $guestCount = (int) $requestTotals->total - $totalAuthRequests;
+
+        $userKey = $this->col('user_key');
+        $isRequest = $this->col('type')." = 'request'";
+        $isException = $this->col('type')." = 'exception'";
+
+        $users = RecordUserBucket::query()
+            ->where('project_id', $project->id)
+            ->forPeriod($period, $from, $to)
+            ->select([
+                DB::raw("{$userKey} as user_id"),
+                DB::raw("{$userKey} as user_name"),
+                DB::raw("'' as user_email"),
+                DB::raw("MD5({$userKey}) as hash"),
+                DB::raw("SUM(CASE WHEN {$isRequest} THEN ".$this->col('count').' ELSE 0 END) as total_requests'),
+                DB::raw("SUM(CASE WHEN {$isRequest} THEN ".$this->col('error_count').' ELSE 0 END) as error_count'),
+                DB::raw("SUM(CASE WHEN {$isException} THEN ".$this->col('count').' ELSE 0 END) as exception_count'),
+                DB::raw('MAX('.$this->col('last_seen_at').') as last_seen'),
+            ])
+            ->groupBy('user_key')
+            ->orderBy('last_seen', 'desc')
+            ->paginate(20)
+            ->withQueryString();
 
         return [
-            'users' => $this->enrichUserPaginator($project, $project->records()
-                ->whereRaw("{$user} IS NOT NULL")
-                ->forPeriod($period, $from, $to)
-                ->select([
-                    DB::raw("COALESCE(
-                        {$this->jsonText('user.name')},
-                        {$this->jsonText('user_name')},
-                        {$this->jsonText('user')},
-                        'Anonymous'
-                    ) as user_name"),
-                    DB::raw("COALESCE(
-                        {$this->jsonText('user.email')},
-                        {$this->jsonText('user_email')},
-                        ''
-                    ) as user_email"),
-                    DB::raw("COALESCE(
-                        {$this->jsonText('user.id')},
-                        {$this->jsonText('user')},
-                        'Anonymous'
-                    ) as user_id"),
-                    DB::raw("{$userHash} as hash"),
-                    DB::raw('COUNT(*) as total_requests'),
-                    DB::raw('MAX(created_at) as last_seen'),
-                    DB::raw("SUM(CASE WHEN {$statusCode} >= 400 THEN 1 ELSE 0 END) as error_count"),
-                    DB::raw("SUM(CASE WHEN type = 'exception' THEN 1 ELSE 0 END) as exception_count"),
-                ])
-                ->groupBy('user_name', 'user_email', 'user_id', 'hash')
-                ->orderBy('last_seen', 'desc')
-                ->paginate(20)->withQueryString()),
+            'users' => $this->enrichUserPaginator($project, $users),
             'timeSeries' => $this->getDetailedTimeSeries($project, 'request', $period, $from, $to),
             'overview' => [
                 'auth_users' => $authCount,
@@ -255,51 +191,27 @@ class RecordService
     public function getJobStats(Project $project, ?string $period = null, ?string $from = null, ?string $to = null): array
     {
         $types = ['job-attempt', 'queued-job'];
-        $status = $this->jsonText('status');
-        $duration = $this->jsonNumeric('duration');
 
-        $overview = $project->records()
-            ->whereIn('type', $types)
-            ->forPeriod($period, $from, $to)
-            ->select([
-                DB::raw('COUNT(*) as total'),
-                DB::raw("SUM(CASE WHEN {$status} = 'processed' THEN 1 ELSE 0 END) as processed"),
-                DB::raw("SUM(CASE WHEN {$status} = 'failed' THEN 1 ELSE 0 END) as failed"),
-                DB::raw("AVG({$duration}) as avg_duration"),
-                DB::raw("MAX({$duration}) as max_duration"),
-            ])->first();
+        $overview = $this->rollupTotals($project, $types, $period, $from, $to);
+
+        $jobs = $this->groupList($project, $types, $period, $from, $to)
+            ->through(function ($row) {
+                $row->job_class = $row->label ?? 'Unknown Job';
+                $row->processed_count = (int) $row->ok_count;
+                $row->failed_count = (int) $row->server_error_count;
+
+                return $row;
+            });
 
         return [
-            'jobs' => $project->records()
-                ->whereIn('type', $types)
-                ->forPeriod($period, $from, $to)
-                ->select([
-                    DB::raw("COALESCE(
-                        {$this->jsonText('name')},
-                        {$this->jsonText('job')},
-                        {$this->jsonText('job_class')},
-                        {$this->jsonText('payload.name')},
-                        {$this->jsonText('payload.displayName')},
-                        {$this->jsonText('data.commandName')},
-                        'Unknown Job'
-                    ) as job_class"),
-                    'fingerprint as hash',
-                    DB::raw('COUNT(*) as total'),
-                    DB::raw("SUM(CASE WHEN {$status} = 'processed' THEN 1 ELSE 0 END) as processed_count"),
-                    DB::raw("SUM(CASE WHEN {$status} = 'failed' THEN 1 ELSE 0 END) as failed_count"),
-                    DB::raw("AVG({$duration}) as avg_duration"),
-                    DB::raw("MAX({$duration}) as p95_duration"),
-                ])
-                ->groupBy('job_class', 'fingerprint')
-                ->orderBy('total', 'desc')
-                ->paginate(20)->withQueryString(),
+            'jobs' => $jobs,
             'timeSeries' => $this->getDetailedTimeSeries($project, 'job-attempt', $period, $from, $to),
             'overview' => [
-                'total' => (int) ($overview->total ?? 0),
-                'processed' => (int) ($overview->processed ?? 0),
-                'failed' => (int) ($overview->failed ?? 0),
-                'avg_duration' => round($overview->avg_duration ?? 0, 2),
-                'max_duration' => round($overview->max_duration ?? 0, 2),
+                'total' => (int) $overview->total,
+                'processed' => (int) $overview->ok,
+                'failed' => (int) $overview->server_error,
+                'avg_duration' => round($this->avgDuration($overview), 2),
+                'max_duration' => round((float) ($overview->max_duration ?? 0), 2),
             ],
         ];
     }
@@ -309,36 +221,38 @@ class RecordService
      */
     public function getExceptionStats(Project $project, ?string $period = null, ?string $from = null, ?string $to = null): array
     {
-        $user = $this->jsonValue('user');
         $userDistinct = $this->jsonDistinct('user');
 
-        $overview = $project->records()
-            ->ofType('exception')
+        $overview = $this->rollupTotals($project, 'exception', $period, $from, $to);
+
+        $uniqueTypes = $this->distinctGroups($project, 'exception', $period, $from, $to);
+
+        $exceptions = $this->groupList($project, 'exception', $period, $from, $to, sort: 'last_seen');
+
+        $userCounts = RecordGroupUserBucket::query()
+            ->where('project_id', $project->id)
+            ->where('type', 'exception')
+            ->whereIn('group_key', collect($exceptions->items())->pluck('hash')->all())
             ->forPeriod($period, $from, $to)
-            ->select([
-                DB::raw('COUNT(*) as total'),
-                DB::raw('COUNT(DISTINCT fingerprint) as unique_types'),
-            ])->first();
+            ->select('group_key', DB::raw('COUNT(DISTINCT '.$this->col('user_key').') as users'))
+            ->groupBy('group_key')
+            ->pluck('users', 'group_key');
+
+        $exceptions->through(function ($row) use ($userCounts) {
+            $row->class = $row->label;
+            $row->message = $row->sublabel;
+            $row->total_count = (int) $row->total;
+            $row->user_count = (int) ($userCounts[$row->hash] ?? 0);
+
+            return $row;
+        });
 
         return [
-            'exceptions' => $project->records()
-                ->ofType('exception')
-                ->forPeriod($period, $from, $to)
-                ->select([
-                    'fingerprint as hash',
-                    DB::raw("{$this->jsonText('class')} as class"),
-                    DB::raw("{$this->jsonText('message')} as message"),
-                    DB::raw('COUNT(*) as total_count'),
-                    DB::raw("COUNT(DISTINCT {$userDistinct}) as user_count"),
-                    DB::raw('MAX(created_at) as last_seen'),
-                ])
-                ->groupBy('class', 'message', 'fingerprint')
-                ->orderBy('last_seen', 'desc')
-                ->paginate(20)->withQueryString(),
+            'exceptions' => $exceptions,
             'timeSeries' => $this->getDetailedTimeSeries($project, 'exception', $period, $from, $to),
             'overview' => [
-                'total' => (int) ($overview->total ?? 0),
-                'unique' => (int) ($overview->unique_types ?? 0),
+                'total' => (int) $overview->total,
+                'unique' => $uniqueTypes,
             ],
         ];
     }
@@ -351,43 +265,25 @@ class RecordService
         $exitCode = $this->jsonNumeric('exit_code');
         $duration = $this->jsonNumeric('duration');
 
-        $overview = $project->records()
-            ->ofType('command')
-            ->forPeriod($period, $from, $to)
-            ->select([
-                DB::raw('COUNT(*) as total'),
-                DB::raw("SUM(CASE WHEN {$exitCode} = 0 THEN 1 ELSE 0 END) as success"),
-                DB::raw("SUM(CASE WHEN {$exitCode} != 0 THEN 1 ELSE 0 END) as failed"),
-                DB::raw("AVG({$duration}) as avg_duration"),
-            ])->first();
+        $overview = $this->rollupTotals($project, 'command', $period, $from, $to);
+
+        $commands = $this->groupList($project, 'command', $period, $from, $to)
+            ->through(function ($row) {
+                $row->command_name = $row->label ?? 'Unknown Command';
+                $row->success_count = (int) $row->ok_count;
+                $row->failed_count = (int) $row->server_error_count;
+
+                return $row;
+            });
 
         return [
-            'commands' => $project->records()
-                ->ofType('command')
-                ->forPeriod($period, $from, $to)
-                ->select([
-                    DB::raw("COALESCE(
-                        {$this->jsonText('command')},
-                        {$this->jsonText('name')},
-                        {$this->jsonText('payload.command')},
-                        {$this->jsonText('data.command')},
-                        'Unknown Command'
-                    ) as command_name"),
-                    'fingerprint as hash',
-                    DB::raw('COUNT(*) as total'),
-                    DB::raw("SUM(CASE WHEN {$exitCode} = 0 THEN 1 ELSE 0 END) as success_count"),
-                    DB::raw("SUM(CASE WHEN {$exitCode} != 0 THEN 1 ELSE 0 END) as failed_count"),
-                    DB::raw("AVG({$duration}) as avg_duration"),
-                    DB::raw("MAX({$duration}) as p95_duration"),
-                ])
-                ->groupBy('command_name', 'fingerprint')
-                ->paginate(20)->withQueryString(),
+            'commands' => $commands,
             'timeSeries' => $this->getDetailedTimeSeries($project, 'command', $period, $from, $to),
             'overview' => [
-                'total' => (int) ($overview->total ?? 0),
-                'success' => (int) ($overview->success ?? 0),
-                'failed' => (int) ($overview->failed ?? 0),
-                'avg_duration' => round($overview->avg_duration ?? 0, 2),
+                'total' => (int) $overview->total,
+                'success' => (int) $overview->ok,
+                'failed' => (int) $overview->server_error,
+                'avg_duration' => round($this->avgDuration($overview), 2),
             ],
         ];
     }
@@ -402,63 +298,38 @@ class RecordService
         $duration = $this->jsonNumeric('duration');
         $status = $this->jsonText('status');
 
-        $overview = $project->records()
-            ->ofType('scheduled-task')
-            ->forPeriod($period, $from, $to)
-            ->select([
-                DB::raw('COUNT(*) as total'),
-                DB::raw("SUM(CASE WHEN {$exitCode} = 0 THEN 1 ELSE 0 END) as success"),
-                DB::raw("SUM(CASE WHEN {$exitCode} != 0 THEN 1 ELSE 0 END) as failed"),
-                DB::raw("AVG({$duration}) as avg_duration"),
-            ])->first();
+        $overview = $this->rollupTotals($project, 'scheduled-task', $period, $from, $to);
+
+        $tasks = $this->groupList($project, 'scheduled-task', $period, $from, $to)
+            ->through(function ($task) {
+                $task->command = $task->label ?? 'Unknown Task';
+                $task->schedule = $task->sublabel;
+                $task->processed_count = (int) $task->ok_count;
+                $task->failed_count = (int) $task->server_error_count;
+                $task->skipped_count = (int) $task->neutral_count;
+
+                try {
+                    if ($task->schedule) {
+                        $cron = new CronExpression($task->schedule);
+                        $task->next_run = $cron->getNextRunDate()->format('Y-m-d H:i:s');
+                    } else {
+                        $task->next_run = 'N/A';
+                    }
+                } catch (\Exception $e) {
+                    $task->next_run = 'Invalid Schedule';
+                }
+
+                return $task;
+            });
 
         return [
-            'tasks' => $project->records()
-                ->ofType('scheduled-task')
-                ->forPeriod($period, $from, $to)
-                ->select([
-                    DB::raw("COALESCE(
-                        {$this->jsonText('command')},
-                        {$this->jsonText('name')},
-                        {$this->jsonText('payload.command')},
-                        'Unknown Task'
-                    ) as command"),
-                    DB::raw("COALESCE(
-                        {$this->jsonText('cron')},
-                        {$this->jsonText('expression')},
-                        {$this->jsonText('schedule')}
-                    ) as schedule"),
-                    'fingerprint as hash',
-                    DB::raw('COUNT(*) as total'),
-                    DB::raw("SUM(CASE WHEN {$exitCode} = 0 THEN 1 ELSE 0 END) as processed_count"),
-                    DB::raw("SUM(CASE WHEN {$exitCode} != 0 AND {$exitCodeValue} IS NOT NULL THEN 1 ELSE 0 END) as failed_count"),
-                    DB::raw("SUM(CASE WHEN {$status} = 'skipped' THEN 1 ELSE 0 END) as skipped_count"),
-                    DB::raw("AVG({$duration}) as avg_duration"),
-                    DB::raw("MAX({$duration}) as p95_duration"),
-                ])
-                ->groupBy('command', 'schedule', 'fingerprint')
-                ->orderBy('total', 'desc')
-                ->paginate(20)
-                ->through(function ($task) {
-                    try {
-                        if ($task->schedule) {
-                            $cron = new CronExpression($task->schedule);
-                            $task->next_run = $cron->getNextRunDate()->format('Y-m-d H:i:s');
-                        } else {
-                            $task->next_run = 'N/A';
-                        }
-                    } catch (\Exception $e) {
-                        $task->next_run = 'Invalid Schedule';
-                    }
-
-                    return $task;
-                }),
+            'tasks' => $tasks,
             'timeSeries' => $this->getDetailedTimeSeries($project, 'scheduled-task', $period, $from, $to),
             'overview' => [
-                'total' => (int) ($overview->total ?? 0),
-                'success' => (int) ($overview->success ?? 0),
-                'failed' => (int) ($overview->failed ?? 0),
-                'avg_duration' => round($overview->avg_duration ?? 0, 2),
+                'total' => (int) $overview->total,
+                'success' => (int) $overview->ok,
+                'failed' => (int) $overview->server_error,
+                'avg_duration' => round($this->avgDuration($overview), 2),
             ],
         ];
     }
@@ -470,34 +341,24 @@ class RecordService
     {
         $duration = $this->jsonNumeric('duration');
 
-        $overview = $project->records()
-            ->ofType('query')
-            ->forPeriod($period, $from, $to)
-            ->select([
-                DB::raw('COUNT(*) as total'),
-                DB::raw("AVG({$duration}) as avg_duration"),
-            ])->first();
+        $overview = $this->rollupTotals($project, 'query', $period, $from, $to);
+
+        $queries = $this->groupList($project, 'query', $period, $from, $to)
+            ->through(function ($row) {
+                $row->sql_query = $row->sublabel;
+                $row->db_connection = $row->label ?? 'mysql';
+                $row->total_calls = (int) $row->total;
+                $row->total_duration = (float) $row->sum_duration;
+
+                return $row;
+            });
 
         return [
-            'queries' => $project->records()
-                ->ofType('query')
-                ->forPeriod($period, $from, $to)
-                ->select([
-                    'fingerprint as hash',
-                    DB::raw("{$this->jsonText('sql')} as sql_query"),
-                    DB::raw("COALESCE({$this->jsonText('connection')}, 'mysql') as db_connection"),
-                    DB::raw('COUNT(*) as total_calls'),
-                    DB::raw("AVG({$duration}) as avg_duration"),
-                    DB::raw("MAX({$duration}) as p95_duration"),
-                    DB::raw("SUM({$duration}) as total_duration"),
-                ])
-                ->groupBy('sql_query', 'hash', 'db_connection')
-                ->orderBy('total_calls', 'desc')
-                ->paginate(20)->withQueryString(),
+            'queries' => $queries,
             'timeSeries' => $this->getDetailedTimeSeries($project, 'query', $period, $from, $to),
             'overview' => [
-                'total' => (int) ($overview->total ?? 0),
-                'avg_duration' => round($overview->avg_duration ?? 0, 2),
+                'total' => (int) $overview->total,
+                'avg_duration' => round($this->avgDuration($overview), 2),
             ],
         ];
     }
@@ -512,39 +373,23 @@ class RecordService
         $resolvedStatus = "COALESCE({$statusCode}, {$status})";
         $duration = $this->jsonNumeric('duration');
 
-        $overview = $project->records()
-            ->ofType('outgoing-request')
-            ->forPeriod($period, $from, $to)
-            ->select([
-                DB::raw('COUNT(*) as total'),
-                DB::raw("SUM(CASE WHEN {$resolvedStatus} BETWEEN 100 AND 399 THEN 1 ELSE 0 END) as ok"),
-                DB::raw("SUM(CASE WHEN {$resolvedStatus} >= 400 THEN 1 ELSE 0 END) as failed"),
-                DB::raw("AVG({$duration}) as avg_duration"),
-            ])->first();
+        $overview = $this->rollupTotals($project, 'outgoing-request', $period, $from, $to);
+
+        $hosts = $this->groupList($project, 'outgoing-request', $period, $from, $to)
+            ->through(function ($row) {
+                $row->host = $row->label;
+
+                return $row;
+            });
 
         return [
-            'hosts' => $project->records()
-                ->ofType('outgoing-request')
-                ->forPeriod($period, $from, $to)
-                ->select([
-                    DB::raw("{$this->jsonText('host')} as host"),
-                    'fingerprint as hash',
-                    DB::raw('COUNT(*) as total'),
-                    DB::raw("SUM(CASE WHEN {$resolvedStatus} BETWEEN 100 AND 399 THEN 1 ELSE 0 END) as ok_count"),
-                    DB::raw("SUM(CASE WHEN {$resolvedStatus} BETWEEN 400 AND 499 THEN 1 ELSE 0 END) as client_error_count"),
-                    DB::raw("SUM(CASE WHEN {$resolvedStatus} >= 500 THEN 1 ELSE 0 END) as server_error_count"),
-                    DB::raw("AVG({$duration}) as avg_duration"),
-                    DB::raw("MAX({$duration}) as p95_duration"),
-                ])
-                ->groupBy('host', 'fingerprint')
-                ->orderBy('total', 'desc')
-                ->paginate(20)->withQueryString(),
+            'hosts' => $hosts,
             'timeSeries' => $this->getDetailedTimeSeries($project, 'outgoing-request', $period, $from, $to),
             'overview' => [
-                'total' => (int) ($overview->total ?? 0),
-                'ok' => (int) ($overview->ok ?? 0),
-                'failed' => (int) ($overview->failed ?? 0),
-                'avg_duration' => round($overview->avg_duration ?? 0, 2),
+                'total' => (int) $overview->total,
+                'ok' => (int) $overview->ok,
+                'failed' => (int) $overview->client_error + (int) $overview->server_error,
+                'avg_duration' => round($this->avgDuration($overview), 2),
             ],
         ];
     }
@@ -556,37 +401,24 @@ class RecordService
     {
         $cacheType = $this->jsonText('type');
 
-        $overview = $project->records()
-            ->ofType('cache-event')
-            ->forPeriod($period, $from, $to)
-            ->select([
-                DB::raw('COUNT(*) as total'),
-                DB::raw("SUM(CASE WHEN {$cacheType} = 'hit' THEN 1 ELSE 0 END) as hits"),
-                DB::raw("SUM(CASE WHEN {$cacheType} = 'miss' THEN 1 ELSE 0 END) as misses"),
-            ])->first();
+        $overview = $this->rollupTotals($project, 'cache-event', $period, $from, $to);
+
+        $keys = $this->groupList($project, 'cache-event', $period, $from, $to)
+            ->through(function ($row) {
+                $row->cache_key = $row->label;
+                $row->hit_rate = $row->total > 0 ? round(((int) $row->hits / (int) $row->total) * 100, 2) : 0;
+
+                return $row;
+            });
 
         return [
-            'keys' => $project->records()
-                ->ofType('cache-event')
-                ->forPeriod($period, $from, $to)
-                ->select([
-                    DB::raw("{$this->jsonText('key')} as cache_key"),
-                    DB::raw('COUNT(*) as total'),
-                    DB::raw("SUM(CASE WHEN {$cacheType} = 'hit' THEN 1 ELSE 0 END) as hits"),
-                    DB::raw("SUM(CASE WHEN {$cacheType} = 'miss' THEN 1 ELSE 0 END) as misses"),
-                    DB::raw("SUM(CASE WHEN {$cacheType} = 'write' THEN 1 ELSE 0 END) as writes"),
-                    DB::raw("SUM(CASE WHEN {$cacheType} = 'delete' THEN 1 ELSE 0 END) as deletes"),
-                    DB::raw("(SUM(CASE WHEN {$cacheType} = 'hit' THEN 1 ELSE 0 END) * 100 / NULLIF(COUNT(*), 0)) as hit_rate"),
-                ])
-                ->groupBy('cache_key')
-                ->orderBy('total', 'desc')
-                ->paginate(20)->withQueryString(),
+            'keys' => $keys,
             'timeSeries' => $this->getDetailedTimeSeries($project, 'cache-event', $period, $from, $to),
             'overview' => [
-                'total' => (int) ($overview->total ?? 0),
-                'hits' => (int) ($overview->hits ?? 0),
-                'misses' => (int) ($overview->misses ?? 0),
-                'hit_rate' => $overview->total > 0 ? round(($overview->hits / $overview->total) * 100, 2) : 0,
+                'total' => (int) $overview->total,
+                'hits' => (int) $overview->hits,
+                'misses' => (int) $overview->misses,
+                'hit_rate' => $overview->total > 0 ? round(((int) $overview->hits / (int) $overview->total) * 100, 2) : 0,
             ],
         ];
     }
@@ -599,32 +431,25 @@ class RecordService
         $channel = $this->jsonDistinct('channel');
         $status = $this->jsonText('status');
 
-        $overview = $project->records()
-            ->ofType('notification')
-            ->forPeriod($period, $from, $to)
-            ->select([
-                DB::raw('COUNT(*) as total'),
-                DB::raw("COUNT(DISTINCT {$channel}) as channels_count"),
-            ])->first();
+        $overview = $this->rollupTotals($project, 'notification', $period, $from, $to);
+
+        $channelsCount = $this->distinctGroups($project, 'notification', $period, $from, $to, 'sublabel');
+
+        $notifications = $this->groupList($project, 'notification', $period, $from, $to)
+            ->through(function ($row) {
+                $row->notification_class = $row->label;
+                $row->channel = $row->sublabel;
+                $row->failed_count = (int) $row->server_error_count;
+                $row->sent_count = (int) $row->total - $row->failed_count;
+
+                return $row;
+            });
 
         return [
-            'notifications' => $project->records()
-                ->ofType('notification')
-                ->forPeriod($period, $from, $to)
-                ->select([
-                    'fingerprint as hash',
-                    DB::raw("{$this->jsonText('class')} as notification_class"),
-                    DB::raw("{$this->jsonText('channel')} as channel"),
-                    DB::raw('COUNT(*) as total'),
-                    DB::raw("SUM(CASE WHEN {$status} != 'failed' THEN 1 ELSE 0 END) as sent_count"),
-                    DB::raw("SUM(CASE WHEN {$status} = 'failed' THEN 1 ELSE 0 END) as failed_count"),
-                ])
-                ->groupBy('hash', 'notification_class', 'channel')
-                ->orderBy('total', 'desc')
-                ->paginate(20)->withQueryString(),
+            'notifications' => $notifications,
             'overview' => [
-                'total' => (int) ($overview->total ?? 0),
-                'channels' => (int) ($overview->channels_count ?? 0),
+                'total' => (int) $overview->total,
+                'channels' => $channelsCount,
             ],
         ];
     }
@@ -636,30 +461,23 @@ class RecordService
     {
         $mailer = $this->jsonText('mailer');
 
-        $overview = $project->records()
-            ->ofType('mail')
-            ->forPeriod($period, $from, $to)
-            ->select([
-                DB::raw('COUNT(*) as total'),
-                DB::raw('COUNT(DISTINCT fingerprint) as unique_mailables'),
-            ])->first();
+        $overview = $this->rollupTotals($project, 'mail', $period, $from, $to);
+
+        $uniqueMailables = $this->distinctGroups($project, 'mail', $period, $from, $to);
+
+        $mailables = $this->groupList($project, 'mail', $period, $from, $to)
+            ->through(function ($row) {
+                $row->mailable_class = $row->label;
+                $row->queued_count = (int) $row->ok_count;
+
+                return $row;
+            });
 
         return [
-            'mailables' => $project->records()
-                ->ofType('mail')
-                ->forPeriod($period, $from, $to)
-                ->select([
-                    'fingerprint as hash',
-                    DB::raw("{$this->jsonText('class')} as mailable_class"),
-                    DB::raw('COUNT(*) as total'),
-                    DB::raw("SUM(CASE WHEN {$mailer} = 'log' THEN 0 ELSE 1 END) as queued_count"),
-                ])
-                ->groupBy('hash', 'mailable_class')
-                ->orderBy('total', 'desc')
-                ->paginate(20)->withQueryString(),
+            'mailables' => $mailables,
             'overview' => [
-                'total' => (int) ($overview->total ?? 0),
-                'unique' => (int) ($overview->unique_mailables ?? 0),
+                'total' => (int) $overview->total,
+                'unique' => $uniqueMailables,
             ],
         ];
     }
@@ -674,14 +492,14 @@ class RecordService
             ->forPeriod($period, $from, $to)
             ->latest()
             ->paginate(50)
+            ->withQueryString()
             ->through(function ($record) {
                 if (isset($record->payload['payload']) && is_array($record->payload['payload'])) {
                     $record->payload = array_merge($record->payload, $record->payload['payload']);
                 }
 
                 return $record;
-            })
-            ->withQueryString();
+            });
     }
 
     /**
@@ -689,10 +507,10 @@ class RecordService
      */
     public function getUserHistory(Project $project, string $hash, ?string $period = null, ?string $from = null, ?string $to = null): array
     {
-        $userHash = "MD5(COALESCE({$this->jsonText('user')}, 'Anonymous'))";
+        $userKey = $this->resolveUserKeyFromHash($project, $hash);
 
         $records = $project->records()
-            ->whereRaw("{$userHash} = ?", [$hash])
+            ->where('user_key', $userKey)
             ->forPeriod($period, $from, $to)
             ->latest()
             ->paginate(50)
@@ -724,13 +542,25 @@ class RecordService
             'user_identifier' => $user_name, // legacy support
             'records' => $records,
             'stats' => $project->records()->forPeriod($period, $from, $to)
-                ->whereRaw("{$userHash} = ?", [$hash])
+                ->where('user_key', $userKey)
                 ->select([
                     DB::raw('COUNT(*) as total'),
                     DB::raw('MIN(created_at) as first_seen'),
                     DB::raw('MAX(created_at) as last_seen'),
                 ])->first(),
         ];
+    }
+
+    /**
+     * Searched over `record_user_buckets`, which holds one row per user per
+     * hour rather than one per record.
+     */
+    protected function resolveUserKeyFromHash(Project $project, string $hash): ?string
+    {
+        return RecordUserBucket::query()
+            ->where('project_id', $project->id)
+            ->whereRaw('MD5('.$this->col('user_key').') = ?', [$hash])
+            ->value('user_key');
     }
 
     /**
@@ -763,20 +593,14 @@ class RecordService
      */
     public function getLogRecords(Project $project, ?string $search = null, ?string $period = null, ?string $from = null, ?string $to = null): LengthAwarePaginator
     {
-        return $project->records()
-            ->ofType('log')
-            ->forPeriod($period, $from, $to)
-            ->when($search, fn ($q) => $q->where('payload', 'like', '%'.$search.'%'))
-            ->latest()
-            ->paginate(50)
+        return $this->paginateRawRecords($project, 'log', $search, $period, $from, $to, searchMessage: true)
             ->through(function ($record) {
                 if (isset($record->payload['payload']) && is_array($record->payload['payload'])) {
                     $record->payload = array_merge($record->payload, $record->payload['payload']);
                 }
 
                 return $record;
-            })
-            ->withQueryString();
+            });
     }
 
     /**
@@ -784,20 +608,65 @@ class RecordService
      */
     public function getPaginatedRecords(Project $project, string $type, ?string $search = null, ?string $period = null, ?string $from = null, ?string $to = null): LengthAwarePaginator
     {
-        $typeMap = [
+        return $this->paginateRawRecords($project, $this->resolveRecordType($type), $search, $period, $from, $to);
+    }
+
+    /**
+     * A page of raw records, counted by the rollups rather than by the database.
+     */
+    protected function paginateRawRecords(Project $project, string $type, ?string $search, ?string $period, ?string $from, ?string $to, bool $searchMessage = false): LengthAwarePaginator
+    {
+        $query = $project->records()
+            ->ofType($type)
+            ->forPeriod($period, $from, $to)
+            ->latest();
+
+        if ($search) {
+            if ($searchMessage) {
+                $this->applyMessageSearch($query, $search);
+            } else {
+                $query->where('payload', 'like', '%'.$search.'%');
+            }
+
+            return $query->paginate(50)->withQueryString();
+        }
+
+        return $this->paginateWithKnownTotal($query, $this->rollupCount($project, $type, $period, $from, $to));
+    }
+
+    /**
+     * Search the FULLTEXT-indexed `message` column.
+     *
+     * Uses the index on MySQL/MariaDB and PostgreSQL. FULLTEXT ignores tokens
+     * shorter than its minimum length, and SQLite has no such index, so those
+     * cases fall back to a LIKE over the same narrow column — still far cheaper
+     * than scanning the JSON payload.
+     *
+     * @param  Builder<Record>|HasMany<Record, Project>  $query
+     */
+    protected function applyMessageSearch($query, string $search): void
+    {
+        $term = trim($search);
+        $driver = DB::connection()->getDriverName();
+
+        if ($term !== '' && mb_strlen($term) >= 3 && in_array($driver, ['mysql', 'mariadb', 'pgsql'], true)) {
+            $query->whereFullText('message', $term);
+
+            return;
+        }
+
+        $query->where('message', 'like', '%'.$term.'%');
+    }
+
+    /**
+     * Map a route segment onto the record type the client emits.
+     */
+    protected function resolveRecordType(string $type): string
+    {
+        return [
             'job' => 'job-attempt',
             'cache' => 'cache-event',
-        ];
-
-        $actualType = $typeMap[$type] ?? $type;
-
-        return $project->records()
-            ->ofType($actualType)
-            ->forPeriod($period, $from, $to)
-            ->when($search, fn ($q) => $q->where('payload', 'like', '%'.$search.'%'))
-            ->latest()
-            ->paginate(50)
-            ->withQueryString();
+        ][$type] ?? $type;
     }
 
     /**
@@ -806,13 +675,21 @@ class RecordService
     public function getSecurityStats(Project $project, ?string $period = null, ?string $from = null, ?string $to = null): array
     {
         $records = $project->records()->ofType('request')->forPeriod($period, $from, $to);
-        $ip = $this->jsonDistinct('ip');
         $status = $this->jsonText('status');
 
-        $overview = (clone $records)->select([
-            DB::raw("COUNT(DISTINCT {$ip}) as unique_ips"),
-            DB::raw('COUNT(*) as total_requests'),
-        ])->first();
+        $uniqueIps = RecordIpBucket::query()
+            ->where('project_id', $project->id)
+            ->where('type', 'request')
+            ->forPeriod($period, $from, $to)
+            ->distinct()
+            ->count('ip');
+
+        $totalRequests = $this->rollupCount($project, 'request', $period, $from, $to);
+
+        $overview = (object) [
+            'unique_ips' => $uniqueIps,
+            'total_requests' => $totalRequests,
+        ];
 
         // Failed logins (last 24h or selected period)
         $failedLogins = $project->records()
@@ -866,53 +743,74 @@ class RecordService
     protected function getDetailedTimeSeries(Project $project, string $type, ?string $period = null, ?string $from = null, ?string $to = null): array
     {
         $period = $period ?: '1h';
-        $query = $project->records()
-            ->ofType($type)
-            ->forPeriod($period, $from, $to);
 
-        $timeBucket = $this->timeBucketSql($period);
-        $statusCode = $this->jsonNumeric('status_code');
-        $status = $this->jsonText('status');
-        $exitCode = $this->jsonNumeric('exit_code');
-        $exitCodeValue = $this->jsonValue('exit_code');
-        $cacheType = $this->jsonText('type');
-        $duration = $this->jsonNumeric('duration');
-        $user = $this->jsonDistinct('user');
+        $groupsByMinute = ! in_array($period, ['7d', '14d', '30d', 'custom'], true);
+        $bucket = $groupsByMinute ? $this->col('bucket') : $this->timeBucketSql($period, 'bucket');
 
-        $results = $query->select([
-            DB::raw("{$timeBucket} as minute"),
-            DB::raw('COUNT(*) as total'),
-            DB::raw("SUM(CASE
-                WHEN {$statusCode} BETWEEN 100 AND 399 THEN 1
-                WHEN {$status} = 'processed' THEN 1
-                WHEN {$exitCode} = 0 THEN 1
-                WHEN {$cacheType} = 'hit' THEN 1
-                ELSE 0
-            END) as ok"),
-            DB::raw("SUM(CASE
-                WHEN {$statusCode} BETWEEN 400 AND 499 THEN 1
-                ELSE 0
-            END) as client_error"),
-            DB::raw("SUM(CASE
-                WHEN {$statusCode} >= 500 THEN 1
-                WHEN {$status} = 'failed' THEN 1
-                WHEN type = 'exception' THEN 1
-                WHEN {$exitCode} != 0 AND {$exitCodeValue} IS NOT NULL THEN 1
-                WHEN {$cacheType} = 'miss' THEN 1
-                ELSE 0
-            END) as server_error"),
-            DB::raw("AVG({$duration}) as avg_duration"),
-            DB::raw("SUM(CASE WHEN {$cacheType} = 'hit' THEN 1 ELSE 0 END) as hits"),
-            DB::raw("SUM(CASE WHEN {$cacheType} = 'miss' THEN 1 ELSE 0 END) as misses"),
-            DB::raw("SUM(CASE WHEN {$cacheType} = 'write' THEN 1 ELSE 0 END) as writes"),
-            DB::raw("COUNT(DISTINCT {$user}) as active_users"),
-            DB::raw('COUNT(*) as total_requests'),
-        ])
+        $sum = fn (string $column, string $alias) => DB::raw('SUM('.$this->col($column).') as '.$alias);
+
+        $results = RecordRollup::query()
+            ->where('project_id', $project->id)
+            ->where('type', $type)
+            ->forPeriod($period, $from, $to)
+            ->select([
+                DB::raw("{$bucket} as minute"),
+                $sum('count', 'total'),
+                $sum('ok_count', 'ok'),
+                $sum('client_error_count', 'client_error'),
+                $sum('server_error_count', 'server_error'),
+                $sum('hits', 'hits'),
+                $sum('misses', 'misses'),
+                $sum('writes', 'writes'),
+                DB::raw('SUM('.$this->col('sum_duration').') / NULLIF(SUM('.$this->col('count_duration').'), 0) as avg_duration'),
+            ])
             ->groupBy('minute')
+            ->get();
+
+        $userBucket = $groupsByMinute ? $this->col('bucket') : $bucket;
+
+        $activeUsers = RecordUserBucket::query()
+            ->where('project_id', $project->id)
+            ->where('type', $type)
+            ->forPeriod($period, $from, $to)
+            ->select([
+                DB::raw("{$userBucket} as slot"),
+                DB::raw('COUNT(DISTINCT '.$this->col('user_key').') as active_users'),
+            ])
+            ->groupBy('slot')
             ->get()
-            ->keyBy('minute');
+            ->mapWithKeys(fn ($row) => [
+                $groupsByMinute ? Carbon::parse($row->slot)->format('Y-m-d H') : $row->slot => (int) $row->active_users,
+            ]);
+
+        $results = $results->mapWithKeys(function ($row) use ($activeUsers, $groupsByMinute) {
+            $key = $this->seriesKey($row->minute, $groupsByMinute);
+            $userSlot = $groupsByMinute ? Carbon::parse($row->minute)->format('Y-m-d H') : $row->minute;
+
+            return [$key => [
+                'minute' => $key,
+                'total' => (int) $row->total,
+                'ok' => (int) $row->ok,
+                'client_error' => (int) $row->client_error,
+                'server_error' => (int) $row->server_error,
+                'avg_duration' => round((float) $row->avg_duration, 2),
+                'hits' => (int) $row->hits,
+                'misses' => (int) $row->misses,
+                'writes' => (int) $row->writes,
+                'active_users' => $activeUsers[$userSlot] ?? 0,
+                'total_requests' => (int) $row->total,
+            ]];
+        });
 
         return $this->fillTimeSeriesGaps($results, $period, $from, $to);
+    }
+
+    /**
+     * The chart key a grouped row belongs to.
+     */
+    private function seriesKey(string $value, bool $groupedByMinute): string
+    {
+        return $groupedByMinute ? Carbon::parse($value)->format('H:i') : $value;
     }
 
     /**
@@ -1179,20 +1077,251 @@ class RecordService
         return 'CAST('.$this->jsonValue($path).' AS CHAR)';
     }
 
-    private function timeBucketSql(string $period): string
+    private function timeBucketSql(string $period, string $column = 'created_at'): string
     {
         if ($this->isPgsql()) {
             return match ($period) {
-                '7d', '14d', '30d' => "to_char(created_at, 'MM-DD')",
-                'custom' => "to_char(date_trunc('hour', created_at), 'YYYY-MM-DD HH24:00')",
-                default => "to_char(created_at, 'HH24:MI')",
+                '7d', '14d', '30d' => "to_char({$column}, 'MM-DD')",
+                'custom' => "to_char(date_trunc('hour', {$column}), 'YYYY-MM-DD HH24:00')",
+                default => "to_char({$column}, 'HH24:MI')",
             };
         }
 
         return match ($period) {
-            '7d', '14d', '30d' => "DATE_FORMAT(created_at, '%m-%d')",
-            'custom' => "DATE_FORMAT(created_at, '%Y-%m-%d %H:00')",
-            default => "DATE_FORMAT(created_at, '%H:%i')",
+            '7d', '14d', '30d' => "DATE_FORMAT({$column}, '%m-%d')",
+            'custom' => "DATE_FORMAT({$column}, '%Y-%m-%d %H:00')",
+            default => "DATE_FORMAT({$column}, '%H:%i')",
         };
+    }
+
+    /**
+     * Quote an identifier for the active driver.
+     */
+    private function col(string $name): string
+    {
+        return DB::connection()->getQueryGrammar()->wrap($name);
+    }
+
+    /**
+     * Paginate raw records without asking the database to count them.
+     *
+     * @param  Builder<Record>|HasMany<Record, Project>  $query
+     */
+    protected function paginateWithKnownTotal($query, int $total, int $perPage = 50): LengthAwarePaginator
+    {
+        $page = Paginator::resolveCurrentPage();
+
+        $items = $total === 0
+            ? collect()
+            : $query->forPage($page, $perPage)->get();
+
+        return new LengthAwarePaginator($items, $total, $perPage, $page, [
+            'path' => Paginator::resolveCurrentPath(),
+            'query' => request()->query(),
+        ]);
+    }
+
+    /**
+     * How many records of these types the rollups counted over the period.
+     *
+     * @param  string|list<string>  $types
+     */
+    protected function rollupCount(Project $project, string|array $types, ?string $period, ?string $from, ?string $to): int
+    {
+        return (int) RecordRollup::query()
+            ->where('project_id', $project->id)
+            ->whereIn('type', (array) $types)
+            ->forPeriod($period, $from, $to)
+            ->sum('count');
+    }
+
+    /**
+     * Distinct groups of a type over the period, straight off the group rollups.
+     */
+    protected function distinctGroups(Project $project, string $type, ?string $period, ?string $from, ?string $to, string $column = 'group_key'): int
+    {
+        return RecordGroupRollup::query()
+            ->where('project_id', $project->id)
+            ->where('type', $type)
+            ->forPeriod($period, $from, $to)
+            ->distinct()
+            ->count($column);
+    }
+
+    /**
+     * Sum the pre-aggregated counters for the given record types over a period.
+     *
+     * @param  string|list<string>  $types
+     */
+    protected function rollupTotals(Project $project, string|array $types, ?string $period = null, ?string $from = null, ?string $to = null): object
+    {
+        $sum = fn (string $column, string $alias) => DB::raw('COALESCE(SUM('.$this->col($column).'), 0) as '.$alias);
+
+        $columns = [
+            $sum('count', 'total'),
+            $sum('ok_count', 'ok'),
+            $sum('client_error_count', 'client_error'),
+            $sum('server_error_count', 'server_error'),
+            $sum('neutral_count', 'neutral'),
+            $sum('hits', 'hits'),
+            $sum('misses', 'misses'),
+            $sum('writes', 'writes'),
+            $sum('authed_count', 'authed'),
+            $sum('sum_duration', 'sum_duration'),
+            $sum('count_duration', 'count_duration'),
+            DB::raw('MAX('.$this->col('max_duration').') as max_duration'),
+            DB::raw('MIN('.$this->col('min_duration').') as min_duration'),
+        ];
+
+        foreach (RollupWriter::latencyColumns() as $column) {
+            $columns[] = $sum($column, $column);
+        }
+
+        return RecordRollup::query()
+            ->where('project_id', $project->id)
+            ->whereIn('type', (array) $types)
+            ->forPeriod($period, $from, $to)
+            ->select($columns)
+            ->first();
+    }
+
+    /**
+     * The mean duration. Averages are not additive, so they are recomputed from
+     */
+    protected function avgDuration(object $totals): float
+    {
+        $count = (int) ($totals->count_duration ?? 0);
+
+        return $count > 0 ? ((float) $totals->sum_duration) / $count : 0.0;
+    }
+
+    /**
+     * An approximate 95th percentile, read off the latency histogram.
+     */
+    protected function p95Duration(object $totals): float
+    {
+        $samples = (int) ($totals->count_duration ?? 0);
+
+        if ($samples === 0) {
+            return 0.0;
+        }
+
+        $target = 0.95 * $samples;
+        $cumulative = 0;
+
+        foreach (RollupWriter::LATENCY_BOUNDARIES as $boundary) {
+            $cumulative += (int) ($totals->{'lat_le_'.$boundary} ?? 0);
+
+            if ($cumulative >= $target) {
+                return (float) $boundary;
+            }
+        }
+
+        return (float) ($totals->max_duration ?? 0);
+    }
+
+    /**
+     * The grouped list behind a type's top-N page, read from the group rollups.
+     *
+     * @param  string|list<string>  $types
+     * @param  array<string, string>  $extraColumns  alias => SQL aggregate
+     * @param  array<string, string>  $sortMap  request sort key => SQL alias
+     */
+    protected function groupList(
+        Project $project,
+        string|array $types,
+        ?string $period,
+        ?string $from,
+        ?string $to,
+        array $extraColumns = [],
+        string $sort = 'total',
+        string $direction = 'desc',
+        array $sortMap = [],
+    ): LengthAwarePaginator {
+        $sum = fn (string $column, string $alias) => DB::raw('SUM('.$this->col($column).') as '.$alias);
+
+        $columns = [
+            DB::raw($this->col('group_key').' as hash'),
+            DB::raw('MAX('.$this->col('label').') as label'),
+            DB::raw('MAX('.$this->col('sublabel').') as sublabel'),
+            $sum('count', 'total'),
+            $sum('ok_count', 'ok_count'),
+            $sum('client_error_count', 'client_error_count'),
+            $sum('server_error_count', 'server_error_count'),
+            $sum('neutral_count', 'neutral_count'),
+            $sum('hits', 'hits'),
+            $sum('misses', 'misses'),
+            $sum('writes', 'writes'),
+            $sum('deletes', 'deletes'),
+            $sum('sum_duration', 'sum_duration'),
+            $sum('count_duration', 'count_duration'),
+            DB::raw('MAX('.$this->col('max_duration').') as max_duration'),
+            DB::raw('MIN('.$this->col('min_duration').') as min_duration'),
+            DB::raw('MAX('.$this->col('last_seen_at').') as last_seen'),
+            DB::raw('SUM('.$this->col('sum_duration').') / NULLIF(SUM('.$this->col('count_duration').'), 0) as avg_duration'),
+        ];
+
+        foreach (RollupWriter::latencyColumns() as $column) {
+            $columns[] = $sum($column, $column);
+        }
+
+        foreach ($extraColumns as $alias => $expression) {
+            $columns[] = DB::raw($expression.' as '.$alias);
+        }
+
+        $orderBy = $sortMap[$sort] ?? $sort;
+
+        return RecordGroupRollup::query()
+            ->where('project_id', $project->id)
+            ->whereIn('type', (array) $types)
+            ->forPeriod($period, $from, $to)
+            ->select($columns)
+            ->groupBy('group_key')
+            ->orderBy($orderBy, $direction)
+            ->paginate(20)
+            ->withQueryString()
+            ->through(function ($row) {
+                $row->p95_duration = $this->p95Duration($row);
+                $row->avg_duration = round((float) $row->avg_duration, 2);
+
+                return $row;
+            });
+    }
+
+    /**
+     * The five users producing the most records of a type over a period.
+     *
+     * @return Collection<int, object>
+     */
+    protected function topUsers(Project $project, string $type, string $countAlias, ?string $period = null, ?string $from = null, ?string $to = null)
+    {
+        return RecordUserBucket::query()
+            ->where('project_id', $project->id)
+            ->where('type', $type)
+            ->forPeriod($period, $from, $to)
+            ->select([
+                DB::raw($this->col('user_key').' as user_id'),
+                DB::raw($this->col('user_key').' as user_identifier'),
+                DB::raw("'' as user_email"),
+                DB::raw('SUM('.$this->col('count').') as '.$countAlias),
+                DB::raw('MAX('.$this->col('bucket').') as last_seen'),
+            ])
+            ->groupBy('user_key')
+            ->orderByDesc($countAlias)
+            ->limit(5)
+            ->get();
+    }
+
+    /**
+     * Distinct users seen for a type over a period.
+     */
+    protected function distinctUsers(Project $project, string $type, ?string $period = null, ?string $from = null, ?string $to = null): int
+    {
+        return RecordUserBucket::query()
+            ->where('project_id', $project->id)
+            ->where('type', $type)
+            ->forPeriod($period, $from, $to)
+            ->distinct()
+            ->count('user_key');
     }
 }

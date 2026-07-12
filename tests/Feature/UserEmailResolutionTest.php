@@ -1,32 +1,27 @@
 <?php
 
 use App\Models\Project;
+use App\Services\IngestService;
 use App\Services\RecordService;
 
 test('user stats resolve real email from user detail records', function () {
     $project = Project::factory()->create();
 
-    $project->records()->create([
-        'type' => 'user',
-        'payload' => [
+    // Ingested, because the users list now ranks over the rollup's user buckets.
+    app(IngestService::class)->ingest($project, [
+        [
             't' => 'user',
             'id' => 123,
             'name' => 'Ada Lovelace',
             'username' => 'ada@example.com',
         ],
-        'created_at' => now(),
-    ]);
-
-    $project->records()->create([
-        'type' => 'request',
-        'fingerprint' => 'request-user-123',
-        'payload' => [
+        [
             't' => 'request',
+            '_group' => 'request-user-123',
             'user' => 123,
             'status_code' => 200,
             'duration' => 25,
         ],
-        'created_at' => now(),
     ]);
 
     $stats = app(RecordService::class)->getUserStats($project, '24h');
@@ -40,27 +35,22 @@ test('user stats resolve real email from user detail records', function () {
 test('dashboard active users resolve real email from user detail records', function () {
     $project = Project::factory()->create();
 
-    $project->records()->create([
-        'type' => 'user',
-        'payload' => [
+    // Ingested rather than inserted, because the top-users panel now ranks over
+    // the rollup's user buckets instead of grouping raw JSON.
+    app(IngestService::class)->ingest($project, [
+        [
             't' => 'user',
             'id' => 456,
             'name' => 'Grace Hopper',
             'username' => 'grace@example.com',
         ],
-        'created_at' => now(),
-    ]);
-
-    $project->records()->create([
-        'type' => 'request',
-        'fingerprint' => 'request-user-456',
-        'payload' => [
+        [
             't' => 'request',
+            '_group' => 'request-user-456',
             'user' => 456,
             'status_code' => 200,
             'duration' => 25,
         ],
-        'created_at' => now(),
     ]);
 
     $stats = app(RecordService::class)->getDashboardStats($project, '24h');

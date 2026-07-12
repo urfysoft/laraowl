@@ -1,4 +1,4 @@
-import { Head, Link, usePage, router } from '@inertiajs/react';
+﻿import { Head, Link, usePage } from '@inertiajs/react';
 import {
     Bell,
     ArrowUpRight,
@@ -9,7 +9,6 @@ import {
     XCircle,
     Send,
 } from 'lucide-react';
-import { useEffect } from 'react';
 import { EmptyState } from '@/components/empty-state';
 import { Pagination } from '@/components/pagination';
 import {
@@ -20,6 +19,7 @@ import {
     TableHeader,
     TableRow,
 } from '@/components/ui/table';
+import { useLiveReload } from '@/hooks/use-live-reload';
 import AppLayout from '@/layouts/app-layout';
 import { monitoringQuery } from '@/lib/monitoring-query';
 import { formatCompactNumber } from '@/lib/utils';
@@ -42,21 +42,7 @@ export default function NotificationsIndex({
     const projectSlug =
         props.current_project?.slug || props.currentProject?.slug;
 
-    useEffect(() => {
-        if (!currentProject?.id || !window.Echo) {
-            return;
-        }
-
-        const channel = window.Echo.private(
-            `project.${currentProject.id}`,
-        ).listen('.ProjectDataIngested', () => {
-            router.reload({ preserveScroll: true, preserveState: true } as any);
-        });
-
-        return () => {
-            channel.stopListening('.ProjectDataIngested');
-        };
-    }, [currentProject?.id]);
+    useLiveReload(currentProject?.id);
 
     const data = notifications.data || [];
     const notificationDetailsHref = (hash: string | number) =>

@@ -1,4 +1,4 @@
-import { Head, Link, usePage, router } from '@inertiajs/react';
+﻿import { Head, Link, usePage, router } from '@inertiajs/react';
 import {
     Activity,
     AlertCircle,
@@ -8,7 +8,6 @@ import {
     ChevronsUpDown,
     Globe,
 } from 'lucide-react';
-import { useEffect } from 'react';
 import {
     BarChart,
     Bar,
@@ -29,6 +28,7 @@ import {
     TableHeader,
     TableRow,
 } from '@/components/ui/table';
+import { useLiveReload } from '@/hooks/use-live-reload';
 import AppLayout from '@/layouts/app-layout';
 import { monitoringQuery } from '@/lib/monitoring-query';
 import { formatMicroSeconds, formatCompactNumber } from '@/lib/utils';
@@ -61,21 +61,7 @@ export default function RequestsIndex({
     const projectSlug =
         props.current_project?.slug || props.currentProject?.slug;
 
-    useEffect(() => {
-        if (!currentProject?.id || !window.Echo) {
-            return;
-        }
-
-        const channel = window.Echo.private(
-            `project.${currentProject.id}`,
-        ).listen('.ProjectDataIngested', () => {
-            router.reload({ preserveScroll: true, preserveState: true } as any);
-        });
-
-        return () => {
-            channel.stopListening('.ProjectDataIngested');
-        };
-    }, [currentProject?.id]);
+    useLiveReload(currentProject?.id);
 
     const data = requests.data || [];
     const requestDetailsHref = (hash: string | number) =>

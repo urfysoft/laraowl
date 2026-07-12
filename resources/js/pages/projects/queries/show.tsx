@@ -1,5 +1,6 @@
-import { Head, Link, usePage } from '@inertiajs/react';
+﻿import { Head, Link, usePage } from '@inertiajs/react';
 import { Database, Search, ArrowUpRight, Layers } from 'lucide-react';
+import { Pagination } from '@/components/pagination';
 import { Badge } from '@/components/ui/badge';
 import {
     Table,
@@ -158,6 +159,7 @@ export default function QueryDetails({
                                 ))}
                             </TableBody>
                         </Table>
+                        <Pagination links={records.links} meta={records} />
                     </div>
                 </div>
             </div>

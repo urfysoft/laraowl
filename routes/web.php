@@ -41,6 +41,7 @@ require __DIR__.'/settings.php';
 
 Route::prefix('{current_team}/{project}')
     ->middleware(['auth', 'verified', EnsureTeamMembership::class, EnsureProjectExists::class])
+    ->scopeBindings()
     ->group(function () {
         Route::get('dashboard', [RecordController::class, 'index'])->name('dashboard');
 

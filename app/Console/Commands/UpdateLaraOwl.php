@@ -158,6 +158,7 @@ class UpdateLaraOwl extends Command
             'Installing JS dependencies' => [$this->binary('npm'), 'ci'],
             'Building assets' => [$this->binary('npm'), 'run', 'build'],
             'Running migrations' => [$php, $artisan, 'migrate', '--force'],
+            'Backfilling dashboard rollups' => [$php, $artisan, 'laraowl:rollups:backfill', '--missing', '--no-interaction'],
             'Clearing caches' => [$php, $artisan, 'optimize:clear'],
             'Restarting queue workers' => [$php, $artisan, 'queue:restart'],
         ];

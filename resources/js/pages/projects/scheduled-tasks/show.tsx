@@ -1,5 +1,6 @@
-import { Head, Link, usePage } from '@inertiajs/react';
+﻿import { Head, Link, usePage } from '@inertiajs/react';
 import { Search, Clock, Activity, ArrowUpRight } from 'lucide-react';
+import { Pagination } from '@/components/pagination';
 import { Badge } from '@/components/ui/badge';
 import {
     Table,
@@ -139,6 +140,7 @@ export default function ScheduledTaskDetails({
                                 ))}
                             </TableBody>
                         </Table>
+                        <Pagination links={records.links} meta={records} />
                     </div>
                 </div>
             </div>

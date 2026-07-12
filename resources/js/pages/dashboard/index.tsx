@@ -1,4 +1,4 @@
-import { Head, usePage, Link, router } from '@inertiajs/react';
+﻿import { Head, usePage, Link } from '@inertiajs/react';
 import { formatDistanceToNow } from 'date-fns';
 import {
     Activity as ActivityIcon,
@@ -9,7 +9,6 @@ import {
     Plus,
     Settings2,
 } from 'lucide-react';
-import { useEffect } from 'react';
 import {
     AreaChart,
     Area,
@@ -22,6 +21,7 @@ import {
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent } from '@/components/ui/card';
+import { useLiveReload } from '@/hooks/use-live-reload';
 import AppLayout from '@/layouts/app-layout';
 import { appendMonitoringQuery } from '@/lib/monitoring-query';
 import { formatMicroSeconds, formatCompactNumber } from '@/lib/utils';
@@ -53,21 +53,7 @@ export default function Dashboard({
             to,
         });
 
-    useEffect(() => {
-        if (!currentProject?.id || !window.Echo) {
-            return;
-        }
-
-        const channel = window.Echo.private(
-            `project.${currentProject.id}`,
-        ).listen('.ProjectDataIngested', () => {
-            router.reload({ preserveScroll: true, preserveState: true } as any);
-        });
-
-        return () => {
-            channel.stopListening('.ProjectDataIngested');
-        };
-    }, [currentProject?.id]);
+    useLiveReload(currentProject?.id);
 
     return (
         <>

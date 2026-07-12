@@ -261,10 +261,27 @@ class RecordController extends Controller
 
     public function showOccurrence(Team $current_team, Project $project, Record $record): Response
     {
+        // The record is bound by global id, so verify it belongs to the project
+        // in the URL — otherwise any member of any team could read another
+        // team's telemetry by guessing record ids.
+        abort_if($record->project_id !== $project->id, 404);
+
         $record->load('issue');
+        $relatedRecords = [];
+        $traceId = $record->trace_id ?? ($record->payload['trace_id'] ?? null);
+
+        if ($traceId) {
+            $relatedRecords = $project->records()
+                ->where('trace_id', $traceId)
+                ->where('id', '!=', $record->id)
+                ->orderBy('created_at')
+                ->limit(200)
+                ->get(['id', 'type', 'payload', 'created_at']);
+        }
 
         return Inertia::render('projects/records/show', [
             'record' => $record,
+            'relatedRecords' => $relatedRecords,
         ]);
     }
 }

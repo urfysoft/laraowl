@@ -43,6 +43,8 @@ class Project extends Model implements HasMedia
         'uptime_check_interval',
         'last_uptime_check_at',
         'last_uptime_status',
+        'retention_days',
+        'rollup_retention_days',
         'settings',
     ];
 
@@ -103,6 +105,16 @@ class Project extends Model implements HasMedia
         return $this->hasMany(Record::class);
     }
 
+    public function rollups(): HasMany
+    {
+        return $this->hasMany(RecordRollup::class);
+    }
+
+    public function userBuckets(): HasMany
+    {
+        return $this->hasMany(RecordUserBucket::class);
+    }
+
     public function issues(): HasMany
     {
         return $this->hasMany(Issue::class);
@@ -114,6 +126,15 @@ class Project extends Model implements HasMedia
     }
 
     public function alertRules(): HasMany
+    {
+        return $this->hasMany(AlertRule::class);
+    }
+
+    /**
+     * Alias of {@see alertRules()} so scoped route binding of the `{rule}`
+     * parameter resolves against this project.
+     */
+    public function rules(): HasMany
     {
         return $this->hasMany(AlertRule::class);
     }

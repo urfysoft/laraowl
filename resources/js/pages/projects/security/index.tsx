@@ -1,4 +1,4 @@
-import { Head, usePage, router } from '@inertiajs/react';
+﻿import { Head, usePage } from '@inertiajs/react';
 import {
     Shield,
     AlertTriangle,
@@ -7,10 +7,10 @@ import {
     Lock,
     ShieldAlert,
 } from 'lucide-react';
-import { useEffect } from 'react';
 import { IssueTable } from '@/components/issue-table';
 import { Badge } from '@/components/ui/badge';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
+import { useLiveReload } from '@/hooks/use-live-reload';
 import AppLayout from '@/layouts/app-layout';
 
 interface SecurityProps {
@@ -32,21 +32,7 @@ export default function SecurityIndex({
     const { props }: any = usePage();
     const currentProject = props.current_project || props.currentProject;
 
-    useEffect(() => {
-        if (!currentProject?.id || !window.Echo) {
-            return;
-        }
-
-        const channel = window.Echo.private(
-            `project.${currentProject.id}`,
-        ).listen('.ProjectDataIngested', () => {
-            router.reload({ preserveScroll: true, preserveState: true } as any);
-        });
-
-        return () => {
-            channel.stopListening('.ProjectDataIngested');
-        };
-    }, [currentProject?.id]);
+    useLiveReload(currentProject?.id);
 
     return (
         <div className="animate-in space-y-12 duration-700 fade-in slide-in-from-bottom-4">

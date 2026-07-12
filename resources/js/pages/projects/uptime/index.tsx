@@ -1,4 +1,4 @@
-import { Head, usePage, router } from '@inertiajs/react';
+﻿import { Head, usePage } from '@inertiajs/react';
 import {
     Activity as ActivityIcon,
     Clock,
@@ -8,31 +8,17 @@ import {
     History,
     RefreshCw,
 } from 'lucide-react';
-import { useEffect } from 'react';
 import { AreaChart, Area, Tooltip, ResponsiveContainer } from 'recharts';
 import { Badge } from '@/components/ui/badge';
 import { Card, CardContent } from '@/components/ui/card';
+import { useLiveReload } from '@/hooks/use-live-reload';
 import AppLayout from '@/layouts/app-layout';
 
 export default function UptimeIndex({ checks, uptime_stats, period }: any) {
     const { props }: any = usePage();
     const currentProject = props.current_project || props.currentProject;
 
-    useEffect(() => {
-        if (!currentProject?.id || !window.Echo) {
-            return;
-        }
-
-        const channel = window.Echo.private(
-            `project.${currentProject.id}`,
-        ).listen('.ProjectDataIngested', () => {
-            router.reload({ preserveScroll: true, preserveState: true } as any);
-        });
-
-        return () => {
-            channel.stopListening('.ProjectDataIngested');
-        };
-    }, [currentProject?.id]);
+    useLiveReload(currentProject?.id);
 
     return (
         <>

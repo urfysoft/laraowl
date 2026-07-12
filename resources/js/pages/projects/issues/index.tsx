@@ -1,4 +1,4 @@
-import { Head, usePage, router } from '@inertiajs/react';
+﻿import { Head, usePage, router } from '@inertiajs/react';
 import {
     Search,
     TrendingUp,
@@ -20,6 +20,7 @@ import { EmptyState } from '@/components/empty-state';
 import { IssueTable } from '@/components/issue-table';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Input } from '@/components/ui/input';
+import { useLiveReload } from '@/hooks/use-live-reload';
 import AppLayout from '@/layouts/app-layout';
 import { formatCompactNumber } from '@/lib/utils';
 
@@ -44,21 +45,7 @@ export default function Issues({
 
     const [search, setSearch] = useState(filters.search || '');
 
-    useEffect(() => {
-        if (!currentProject?.id || !window.Echo) {
-            return;
-        }
-
-        const channel = window.Echo.private(
-            `project.${currentProject.id}`,
-        ).listen('.ProjectDataIngested', () => {
-            router.reload({ preserveScroll: true, preserveState: true } as any);
-        });
-
-        return () => {
-            channel.stopListening('.ProjectDataIngested');
-        };
-    }, [currentProject?.id]);
+    useLiveReload(currentProject?.id);
     const [view, setView] = useState('exceptions'); // 'exceptions' or 'performance'
 
     const data = issues.data || [];

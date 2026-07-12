@@ -1,5 +1,6 @@
-import { Head, Link, usePage } from '@inertiajs/react';
+﻿import { Head, Link, usePage } from '@inertiajs/react';
 import { ArrowUpRight, Mail } from 'lucide-react';
+import { Pagination } from '@/components/pagination';
 import { Badge } from '@/components/ui/badge';
 import {
     Table,
@@ -129,6 +130,7 @@ export default function MailShow({
                             ))}
                         </TableBody>
                     </Table>
+                    <Pagination links={records.links} meta={records} />
                 </div>
             </div>
         </>

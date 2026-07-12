@@ -1,5 +1,6 @@
 <?php
 
+use App\Console\Commands\UpdateLaraOwl;
 use App\Enums\TeamRole;
 use App\Models\Team;
 use App\Models\User;
@@ -251,6 +252,9 @@ test('the update command with --dry-run prints the steps without running them', 
         ->expectsOutputToContain('Dry run')
         ->expectsOutputToContain('git pull --ff-only')
         ->expectsOutputToContain('migrate --force')
+        // Without this an upgraded instance renders an empty dashboard: the new
+        // rollup tables exist but hold nothing.
+        ->expectsOutputToContain('laraowl:rollups:backfill --missing')
         ->assertExitCode(0);
 
     Process::assertNothingRan();
@@ -269,6 +273,7 @@ test('the update command installs the release in maintenance mode', function () 
 
     Process::assertRan(fn ($process) => $process->command === ['git', 'pull', '--ff-only']);
     Process::assertRan(fn ($process) => in_array('migrate', $process->command, true));
+    Process::assertRan(fn ($process) => in_array('laraowl:rollups:backfill', $process->command, true));
     Process::assertRan(fn ($process) => in_array('queue:restart', $process->command, true));
 
     expect(app()->isDownForMaintenance())->toBeFalse();
@@ -294,6 +299,15 @@ test('a failed step aborts the update and lifts maintenance mode', function () {
     Process::assertNotRan(fn ($process) => in_array('migrate', $process->command, true));
     expect(app()->isDownForMaintenance())->toBeFalse();
 })->skip(fn () => ! is_dir(base_path('.git')), 'Requires a git checkout.');
+
+test('the backfill runs after the migrations that create its tables', function () {
+    $command = new UpdateLaraOwl;
+    $steps = (new ReflectionMethod($command, 'steps'))->invoke($command);
+    $labels = array_keys($steps);
+
+    expect(array_search('Running migrations', $labels, true))
+        ->toBeLessThan(array_search('Backfilling dashboard rollups', $labels, true));
+});
 
 test('the update command fails when github cannot be reached', function () {
     Http::fake([
