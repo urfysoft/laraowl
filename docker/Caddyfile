@@ -1,4 +1,4 @@
-http://{$APP_HOSTNAME}, http://ws.{$APP_HOSTNAME} {
+http://{$APP_HOSTNAME}, http://laraowl-ws.urfysoft.uz {
         root * /usr/share/caddy/html/public
 
         header {
