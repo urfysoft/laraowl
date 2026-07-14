@@ -1,7 +1,7 @@
 name: laraowl
 services:
 
-  app:
+  laraowl-app:
     build:
       context: .
       dockerfile: docker/Dockerfile
@@ -58,7 +58,7 @@ services:
       - storage:/usr/share/caddy/html/storage:rw
       - public:/usr/share/caddy/html/public:rw
 
-  reverb:
+  laraowl-reverb:
     image: laraowl:${APP_VERSION:-latest}
     restart: unless-stopped
     command: php artisan reverb:start
@@ -80,7 +80,7 @@ services:
     image: caddy:2-alpine
     restart: unless-stopped
     depends_on:
-      app:
+      laraowl-app:
         condition: service_started
 #    ports:
 #      - 80:80

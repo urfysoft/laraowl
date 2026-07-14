@@ -34,11 +34,11 @@ http://{$APP_HOSTNAME}, http://laraowl-ws.urfysoft.uz {
 
         # Proxy Reverb WebSocket connection
         handle /app* {
-                reverse_proxy reverb:8080
+                reverse_proxy laraowl-reverb:8080
         }
 
         # Handle PHP files with FastCGI
-        php_fastcgi app:9000
+        php_fastcgi laraowl-app:9000
         file_server
 
         # Logging
