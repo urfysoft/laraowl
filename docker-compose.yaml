@@ -82,9 +82,9 @@ services:
     depends_on:
       app:
         condition: service_started
-    ports:
-      - 80:80
-      - 443:443
+#    ports:
+#      - 80:80
+#      - 443:443
     volumes:
       - ./docker/Caddyfile:/etc/caddy/Caddyfile
       - storage:/usr/share/caddy/html/storage:rw
@@ -94,7 +94,13 @@ services:
     env_file:
       - .env
     healthcheck:
-      test: ["CMD", "wget", "--no-check-certificate", "--quiet", "--spider", "https://localhost/"]
+ #     test: ["CMD", "wget", "--no-check-certificate", "--quiet", "--spider", "https://localhost/"]
+      test:
+        - CMD
+        - wget
+        - --quiet
+        - --spider
+        - http://localhost/ 
       interval: 10s
       timeout: 5s
       retries: 3
