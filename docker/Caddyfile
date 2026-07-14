@@ -47,3 +47,7 @@ http://{$APP_HOSTNAME}, http://ws.{$APP_HOSTNAME} {
                 format console
         }
 }
+
+http://localhost {
+        respond "OK" 200
+}
