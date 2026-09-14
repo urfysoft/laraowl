@@ -67,8 +67,13 @@ class BackfillRollups extends Command
 
         if ($identifier) {
             return Project::query()
-                ->where('id', $identifier)
-                ->orWhere('slug', $identifier)
+                ->where(function ($query) use ($identifier) {
+                    if (ctype_digit($identifier)) {
+                        $query->orWhere('id', $identifier);
+                    }
+
+                    $query->orWhere('slug', $identifier);
+                })
                 ->get();
         }
 
