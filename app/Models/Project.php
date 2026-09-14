@@ -3,6 +3,7 @@
 namespace App\Models;
 
 use App\Concerns\GeneratesUniqueProjectSlugs;
+use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
@@ -40,6 +41,7 @@ class Project extends Model implements HasMedia
         'slug',
         'api_token',
         'url',
+        'uptime_monitoring_enabled',
         'uptime_check_interval',
         'last_uptime_check_at',
         'last_uptime_status',
@@ -72,7 +74,24 @@ class Project extends Model implements HasMedia
     protected $casts = [
         'settings' => 'array',
         'last_uptime_check_at' => 'datetime',
+        'uptime_monitoring_enabled' => 'boolean',
     ];
+
+    /**
+     * Determine whether this project is eligible for uptime checks.
+     */
+    public function hasUptimeMonitoring(): bool
+    {
+        return $this->uptime_monitoring_enabled && filled($this->url);
+    }
+
+    /**
+     * Scope the query to projects that should be checked for uptime.
+     */
+    public function scopeWithUptimeMonitoring(Builder $query): Builder
+    {
+        return $query->where('uptime_monitoring_enabled', true)->whereNotNull('url');
+    }
 
     public function getRouteKeyName(): string
     {

@@ -21,6 +21,10 @@ class CheckOnboarding
             return $next($request);
         }
 
+        if ($request->routeIs('invitations.accept')) {
+            return $next($request);
+        }
+
         // 1. Check if user has any teams
         if ($user->teams()->count() === 0) {
             if (! $request->routeIs('teams.create') && ! $request->routeIs('teams.store') && ! $request->routeIs('logout')) {

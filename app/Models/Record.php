@@ -3,10 +3,12 @@
 namespace App\Models;
 
 use Carbon\CarbonInterface;
+use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\MassPrunable;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
+use Illuminate\Database\Query\Builder as QueryBuilder;
 use Illuminate\Support\Facades\DB;
 
 class Record extends Model
@@ -95,15 +97,40 @@ class Record extends Model
 
     /**
      * Get the prunable model query.
+     *
+     * Set-based on purpose: a correlated `whereExists` against `projects`
+     * lets the database evaluate the retention cutoff per row, so this stays
+     * a single query regardless of project count instead of fetching every
+     * project into PHP and building one `orWhere` per project.
      */
-    public function prunable()
+    public function prunable(): Builder
     {
-        return static::whereExists(function ($query) {
+        return static::query()->whereExists(function (QueryBuilder $query) {
             $query->select(DB::raw(1))
                 ->from('projects')
                 ->whereColumn('projects.id', 'records.project_id')
                 ->where('projects.retention_days', '>', 0)
-                ->whereRaw('records.created_at < DATE_SUB(NOW(), INTERVAL projects.retention_days DAY)');
+                ->whereRaw($this->retentionCutoffSql(DB::connection()->getDriverName()));
         });
+    }
+
+    /**
+     * SQL fragment comparing `records.created_at` against the per-project
+     * retention cutoff (`now() - projects.retention_days days`).
+     *
+     * The interval arithmetic isn't portable across drivers, so it's
+     * expressed explicitly per driver: MySQL/MariaDB (production) via
+     * `DATE_SUB`; PostgreSQL via multiplying an `INTERVAL` by the
+     * `retention_days` column; SQLite (tests) via the `datetime()` modifier
+     * built through string concatenation.
+     */
+    private function retentionCutoffSql(string $driver): string
+    {
+        return match ($driver) {
+            'mysql', 'mariadb' => 'records.created_at < DATE_SUB(NOW(), INTERVAL projects.retention_days DAY)',
+            'pgsql' => "records.created_at < NOW() - (INTERVAL '1 day' * projects.retention_days)",
+            'sqlite' => "records.created_at < datetime('now', '-' || projects.retention_days || ' days')",
+            default => throw new \RuntimeException("Unsupported database driver for retention pruning: {$driver}"),
+        };
     }
 }

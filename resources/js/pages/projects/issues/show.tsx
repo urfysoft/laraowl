@@ -88,7 +88,7 @@ export default function IssueShow({
         }
     };
 
-    const stackTrace = Array.isArray(payload.trace) ? payload.trace : [];
+    const stackTrace = Array.isArray(payload.stack) ? payload.stack : [];
 
     return (
         <div className="mx-auto max-w-[1600px] animate-in space-y-6 duration-700 fade-in slide-in-from-bottom-4">
