@@ -117,6 +117,7 @@ class RecordService
             'total_exceptions' => (int) $exceptionStats->total,
             'recent_issues' => $project->issues()->where('status', 'open')->latest('last_seen_at')->limit(5)->get(),
             'timeSeries' => $this->getDetailedTimeSeries($project, 'request', $period, $from, $to),
+            'exceptionTimeSeries' => $this->getDetailedTimeSeries($project, 'exception', $period, $from, $to),
             'job_stats' => [
                 'total' => (int) $jobStats->total,
                 'processed' => (int) $jobStats->ok,
@@ -762,6 +763,7 @@ class RecordService
                 $sum('hits', 'hits'),
                 $sum('misses', 'misses'),
                 $sum('writes', 'writes'),
+                $sum('authed_count', 'authed'),
                 DB::raw('SUM('.$this->col('sum_duration').') / NULLIF(SUM('.$this->col('count_duration').'), 0) as avg_duration'),
             ])
             ->groupBy('minute')
@@ -786,6 +788,7 @@ class RecordService
         $results = $results->mapWithKeys(function ($row) use ($activeUsers, $groupsByMinute) {
             $key = $this->seriesKey($row->minute, $groupsByMinute);
             $userSlot = $groupsByMinute ? Carbon::parse($row->minute)->format('Y-m-d H') : $row->minute;
+            $authed = (int) $row->authed;
 
             return [$key => [
                 'minute' => $key,
@@ -799,6 +802,8 @@ class RecordService
                 'writes' => (int) $row->writes,
                 'active_users' => $activeUsers[$userSlot] ?? 0,
                 'total_requests' => (int) $row->total,
+                'authed' => $authed,
+                'guest' => max((int) $row->total - $authed, 0),
             ]];
         });
 
@@ -860,6 +865,8 @@ class RecordService
                     'writes' => 0,
                     'active_users' => 0,
                     'total_requests' => 0,
+                    'authed' => 0,
+                    'guest' => 0,
                 ];
             }
         }
@@ -951,6 +958,18 @@ class RecordService
 
     public function getUptimeStats(Project $project, ?string $period = null, ?string $from = null, ?string $to = null): array
     {
+        if (! $project->hasUptimeMonitoring()) {
+            return [
+                'checks' => new LengthAwarePaginator([], 0, 50),
+                'uptime_stats' => [
+                    'uptime_percentage' => 0,
+                    'avg_response_time' => 0,
+                    'last_check' => null,
+                    'total_checks' => 0,
+                ],
+            ];
+        }
+
         $query = $project->uptimeChecks()
             ->orderBy('checked_at', 'desc');
 

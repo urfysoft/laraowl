@@ -2,12 +2,12 @@
 
 namespace App\Http\Controllers\Projects;
 
+use App\Actions\Projects\CreateProject;
 use App\Http\Controllers\Controller;
 use App\Models\Project;
 use App\Models\Team;
 use App\Services\CloudflareService;
 use Illuminate\Http\Request;
-use Illuminate\Support\Str;
 
 class ProjectController extends Controller
 {
@@ -16,17 +16,34 @@ class ProjectController extends Controller
         $request->validate([
             'name' => ['required', 'string', 'max:255'],
             'url' => ['nullable', 'url', 'max:255'],
+            'uptime_monitoring_enabled' => ['sometimes', 'boolean'],
             'uptime_check_interval' => ['nullable', 'integer', 'min:30'],
             'retention_days' => ['nullable', 'integer', 'min:0', 'max:365'],
             'logo' => ['nullable', 'image', 'max:2048'],
         ]);
 
-        $project->update([
+        // Keep the stored value when the field is omitted so a partial update
+        // can't silently switch monitoring off.
+        $monitoringEnabled = $request->missing('uptime_monitoring_enabled')
+            ? $project->uptime_monitoring_enabled
+            : $request->boolean('uptime_monitoring_enabled');
+
+        $attributes = [
             'name' => $request->name,
             'url' => $request->url,
+            'uptime_monitoring_enabled' => $monitoringEnabled,
             'uptime_check_interval' => $request->uptime_check_interval ?? 60,
             'retention_days' => $request->retention_days ?? 7,
-        ]);
+        ];
+
+        // Clear the stale status so a disabled project no longer reads as
+        // "down" and re-enabling it can't fire a false recovery alert.
+        if (! $monitoringEnabled && $project->uptime_monitoring_enabled) {
+            $attributes['last_uptime_status'] = null;
+            $attributes['last_uptime_check_at'] = null;
+        }
+
+        $project->update($attributes);
 
         if ($request->hasFile('logo')) {
             $project->clearMediaCollection('logo');
@@ -79,7 +96,7 @@ class ProjectController extends Controller
         }
     }
 
-    public function store(Request $request, Team $current_team)
+    public function store(Request $request, Team $current_team, CreateProject $createProject)
     {
         $request->validate([
             'name' => ['required', 'string', 'max:255'],
@@ -87,52 +104,10 @@ class ProjectController extends Controller
             'logo' => ['nullable', 'image', 'max:2048'],
         ]);
 
-        $project = $current_team->projects()->create([
-            'name' => $request->name,
-            'url' => $request->url,
-            'api_token' => Str::random(32),
-            'uptime_check_interval' => 60,
-        ]);
+        $project = $createProject->handle($current_team, $request->name, $request->url, $request->user()->email);
 
         if ($request->hasFile('logo')) {
             $project->addMediaFromRequest('logo')->toMediaCollection('logo');
-        }
-
-        // Create Default Email Integration
-        $integration = $project->integrations()->create([
-            'name' => 'Default Email',
-            'type' => 'email',
-            'data' => ['email' => $request->user()->email],
-            'is_enabled' => true,
-        ]);
-
-        // Create Default Alert Rules
-        $rules = [
-            [
-                'name' => 'Critical Exceptions',
-                'event_type' => 'new_exception',
-                'settings' => ['frequency' => 'immediate'],
-            ],
-            [
-                'name' => 'Site DOWN Alert',
-                'event_type' => 'uptime_down',
-                'settings' => ['frequency' => 'immediate'],
-            ],
-            [
-                'name' => 'Error Spike Detected',
-                'event_type' => 'error_spike',
-                'settings' => ['threshold' => 50, 'period' => 1], // 50 errors in 1 minute
-            ],
-            [
-                'name' => 'Background Job Failed',
-                'event_type' => 'heartbeat_failed',
-                'settings' => ['frequency' => 'immediate'],
-            ],
-        ];
-
-        foreach ($rules as $ruleData) {
-            $rule = $project->alertRules()->create($ruleData + ['is_enabled' => true]);
-            $rule->integrations()->attach($integration->id);
         }
 
         return redirect()->route('dashboard', [

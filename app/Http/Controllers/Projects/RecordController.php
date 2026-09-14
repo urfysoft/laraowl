@@ -7,6 +7,7 @@ use App\Models\Project;
 use App\Models\Record;
 use App\Models\Team;
 use App\Services\RecordService;
+use App\Support\ExceptionTrace;
 use Illuminate\Http\Request;
 use Illuminate\Support\Str;
 use Inertia\Inertia;
@@ -229,7 +230,7 @@ class RecordController extends Controller
 
         return Inertia::render($component, [
             'hash' => $hash,
-            'meta' => $first ? $first->payload : [],
+            'meta' => $first ? ExceptionTrace::normalize($first->payload) : [],
             'records' => $history,
             'period' => $period,
             'from' => $from,

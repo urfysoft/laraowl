@@ -7,6 +7,7 @@ use App\Models\Issue;
 use App\Models\Project;
 use App\Models\Team;
 use App\Services\IssueService;
+use App\Support\ExceptionTrace;
 use Illuminate\Http\RedirectResponse;
 use Illuminate\Http\Request;
 use Inertia\Inertia;
@@ -43,6 +44,10 @@ class IssueController extends Controller
     public function show(Team $current_team, Project $project, Issue $issue): Response
     {
         $issue->load(['assignee', 'records' => fn ($q) => $q->latest()->limit(1), 'activities.user']);
+
+        if ($record = $issue->records->first()) {
+            $record->payload = ExceptionTrace::normalize($record->payload);
+        }
 
         return Inertia::render('projects/issues/show', [
             'issue' => $issue,

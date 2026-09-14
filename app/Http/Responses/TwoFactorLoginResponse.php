@@ -16,7 +16,7 @@ class TwoFactorLoginResponse implements TwoFactorLoginResponseContract
         $team = $user?->currentTeam ?? $user?->personalTeam();
 
         if (! $team) {
-            return redirect()->route('teams.create');
+            return redirect()->intended(route('teams.create'));
         }
 
         URL::defaults(['current_team' => $team->slug]);
